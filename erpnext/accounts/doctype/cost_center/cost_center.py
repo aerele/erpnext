@@ -17,6 +17,8 @@ class CostCenter(NestedSet):
 		self.name = get_autoname_with_number(self.cost_center_number, self.cost_center_name, None, self.company)
 
 	def validate(self):
+		if self.enable_distributed_cost_center:
+			self.validate_percentage_allocation()
 		self.validate_mandatory()
 		self.validate_parent_cost_center()
 
@@ -92,6 +94,13 @@ class CostCenter(NestedSet):
 			if new_cost_center.cost_center_name != cost_center_name:
 				self.cost_center_name = cost_center_name
 				self.db_set("cost_center_name", cost_center_name)
+
+	def validate_percentage_allocation(self):
+		total_percentage = 0
+		for cost_center in self.distributed_cost_center:
+			total_percentage += cost_center.percentage_allocation
+		if total_percentage != float(100):
+			frappe.throw(_("Total percentage allocation should be equal to 100"))
 
 def on_doctype_update():
 	frappe.db.add_index("Cost Center", ["lft", "rgt"])
