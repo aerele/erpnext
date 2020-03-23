@@ -131,6 +131,7 @@
    "label": "Enable Distributed Cost Center"
   },
   {
+   "depends_on": "eval:doc.is_group==0",
    "fieldname": "section_break_9",
    "fieldtype": "Section Break"
   },
@@ -146,7 +147,7 @@
  "idx": 1,
  "is_tree": 1,
  "links": [],
- "modified": "2020-03-19 12:52:25.908558",
+ "modified": "2020-03-23 17:20:50.876379",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Cost Center",

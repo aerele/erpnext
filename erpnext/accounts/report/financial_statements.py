@@ -128,7 +128,7 @@ def get_data(
 		company, root_type, balance_must_be, period_list, filters=None,
 		accumulated_values=1, only_current_fiscal_year=True, ignore_closing_entries=False,
 		ignore_accumulated_values_for_fy=False , total = True):
-	
+
 	accounts = get_accounts(company, root_type)
 	if not accounts:
 		return None
@@ -154,10 +154,10 @@ def get_data(
 	accumulate_values_into_parents(accounts, accounts_by_name, period_list, accumulated_values)
 	out = prepare_data(accounts, balance_must_be, period_list, company_currency)
 	out = filter_out_zero_value_rows(out, parent_children_map)
-	
+
 	if out and total:
 		add_total_row(out, root_type, balance_must_be, period_list, company_currency)
-	
+
 	return out
 
 
@@ -344,9 +344,7 @@ def sort_accounts(accounts, is_root=False, key="name"):
 def set_gl_entries_by_account(
 		company, from_date, to_date, root_lft, root_rgt, filters, gl_entries_by_account, ignore_closing_entries=False):
 	"""Returns a dict like { "account": [gl entries], ... }"""
-	
-	gl_entries = []
-	
+
 	additional_conditions = get_additional_conditions(from_date, ignore_closing_entries, filters)
 
 	accounts = frappe.db.sql_list("""select name from `tabAccount`
@@ -366,20 +364,21 @@ def set_gl_entries_by_account(
 		if filters.get("include_default_book_entries"):
 			gl_filters["company_fb"] = frappe.db.get_value("Company",
 				company, 'default_finance_book')
-		
+
 		for key, value in filters.items():
 			if value:
-				if key=='cost_center':
-					gl_entries.extend(get_distributed_cost_center_gl_entries(value, gl_filters, company, to_date, additional_conditions, key))
 				gl_filters.update({
 					key: value
 				})
 		
-		gl_entries.extend(frappe.db.sql("""select posting_date, account, debit, credit, is_opening, fiscal_year, debit_in_account_currency, credit_in_account_currency, account_currency from `tabGL Entry`
+		gl_entries = frappe.db.sql("""select posting_date, account, debit, credit, is_opening, fiscal_year, debit_in_account_currency, credit_in_account_currency, account_currency from `tabGL Entry`
 			where company=%(company)s
 			{additional_conditions}
 			and posting_date <= %(to_date)s
-			order by account, posting_date""".format(additional_conditions=additional_conditions), gl_filters, as_dict=True)) #nosec
+			order by account, posting_date""".format(additional_conditions=additional_conditions), gl_filters, as_dict=True) #nosec
+
+		if filters['cost_center']:
+			gl_entries.extend(get_distributed_cost_center_gl_entries(filters['cost_center'], gl_filters, company, to_date, additional_conditions, 'cost_center'))
 
 		if filters and filters.get('presentation_currency'):
 			convert_to_presentation_currency(gl_entries, get_currency(filters))
