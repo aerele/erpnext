@@ -370,7 +370,7 @@ def set_gl_entries_by_account(
 				gl_filters.update({
 					key: value
 				})
-		
+
 		gl_entries = frappe.db.sql("""select posting_date, account, debit, credit, is_opening, fiscal_year, debit_in_account_currency, credit_in_account_currency, account_currency from `tabGL Entry`
 			where company=%(company)s
 			{additional_conditions}
