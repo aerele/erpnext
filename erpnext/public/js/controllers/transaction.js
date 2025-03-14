@@ -500,7 +500,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		var sms_man = new erpnext.SMSManager(this.frm.doc);
 	}
 
-	item_code(doc, cdt, cdn) {
+	async item_code(doc, cdt, cdn) {
 		var me = this;
 		// Experimental: This will be removed once stability is achieved.
 		if (frappe.boot.sysdefaults.use_server_side_reactivity) {
@@ -508,6 +508,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			frappe.call({
 				doc: doc,
 				method: "process_item_selection",
+				async: false,
 				args: {
 					item_idx: item.idx
 				},
@@ -518,8 +519,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 				}
 			});
 		} else {
-			me.process_item_selection(doc, cdt, cdn);
+			await me.process_item_selection(doc, cdt, cdn);
 		}
+		me.apply_tax_rule()
 	}
 
 	process_item_selection(doc, cdt, cdn) {
@@ -2085,6 +2087,11 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	}
 
 	tax_category() {
+		var me = this
+		me.apply_tax_rule()
+	}
+
+	apply_tax_rule(){
 		var me = this;
 		if(me.frm.updating_party_details) return;
 
