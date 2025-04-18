@@ -1839,3 +1839,43 @@ def set_depreciation_settings_in_company(company=None):
 
 def enable_cwip_accounting(asset_category, enable=1):
 	frappe.db.set_value("Asset Category", asset_category, "enable_cwip_accounting", enable)
+
+
+def test_depr_schedule_jv():
+	asset = create_asset(
+		item_code="Macbook Pro",
+		calculate_depreciation=1,
+		purchase_date="2025-01-01",
+		available_for_use_date="2025-01-02",
+		expected_value_after_useful_life=0,
+		gross_purchase_amount=1000000,
+		total_number_of_depreciations=5,
+		depreciation_start_date="2025-02-01",
+		frequency_of_depreciation=1,
+		submit=1,
+	)
+	print("Asset Created: ", asset.name)
+	si = make_sales_invoice(asset=asset.name, item_code="Macbook Pro", company="_Test Company")
+	si.customer = "_Test Customer"
+	si.set_posting_time = 1
+	si.posting_date = "2025-03-01"
+	si.due_date = "2025-03-02"
+	si.get("items")[0].rate = 1000000
+	si.insert()
+	si.submit()
+	print("Sales Invoice Created: ", si.name)
+	asset_depreciation = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset.name, "docstatus": 1}, "name"
+	)
+	depreciation_entries = frappe.db.get_list(
+		"Depreciation Schedule",
+		{
+			"parent": asset_depreciation,
+			"docstatus": 1,
+			"journal_entry": ["!=", ""],
+			"schedule_date": ["between", [asset.purchase_date, si.posting_date]],
+		},
+		"name",
+		order_by="schedule_date",
+	)
+	print("Depreciation Entries Created: ", depreciation_entries)

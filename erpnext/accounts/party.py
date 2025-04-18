@@ -136,6 +136,8 @@ def _get_party_details(
 		shipping_address,
 		ignore_permissions=ignore_permissions,
 	)
+	print("party_address", party_address)
+	print("shipping_address", shipping_address)
 	set_contact_details(party_details, party, party_type)
 	set_other_values(party_details, party, party_type)
 	set_price_list(party_details, party, party_type, price_list, pos_profile)
@@ -197,7 +199,10 @@ def set_address_details(
 	billing_address_field = (
 		"customer_address" if party_type in ["Lead", "Prospect"] else party_type.lower() + "_address"
 	)
+	print("billing_address_field", billing_address_field)
+	print("party_address", party_address)
 	party_details[billing_address_field] = party_address or get_default_address(party_type, party.name)
+	print("party_details[billing_address_field]", party_details[billing_address_field])
 	if doctype:
 		party_details.update(
 			get_fetch_values(doctype, billing_address_field, party_details[billing_address_field])
@@ -925,6 +930,7 @@ def get_party_shipping_address(doctype: str, name: str) -> str | None:
 		limit=1,
 		order_by="is_shipping_address DESC",
 	)
+	print("shipping_addresses", shipping_addresses)
 
 	return shipping_addresses[0] if shipping_addresses else None
 

@@ -7,7 +7,7 @@ from frappe import _, msgprint, throw
 from frappe.contacts.doctype.address.address import get_address_display
 from frappe.model.mapper import get_mapped_doc
 from frappe.model.utils import get_fetch_values
-from frappe.utils import add_days, cint, cstr, flt, formatdate, get_link_to_form, getdate, nowdate
+from frappe.utils import add_days, cint, cstr, flt, formatdate, get_link_to_form, getdate, nowdate, today
 from frappe.utils.data import comma_and
 
 import erpnext
@@ -1191,7 +1191,6 @@ class SalesInvoice(SellingController):
 				if (cint(self.is_pos) or self.write_off_account or cint(self.redeem_loyalty_points))
 				else "Yes"
 			)
-
 			if self.docstatus == 1:
 				make_gl_entries(
 					gl_entries,
@@ -1339,7 +1338,6 @@ class SalesInvoice(SellingController):
 			)
 
 	def make_item_gl_entries(self, gl_entries):
-		# income account gl entries
 		enable_discount_accounting = cint(
 			frappe.db.get_single_value("Selling Settings", "enable_discount_accounting")
 		)
@@ -1388,7 +1386,12 @@ class SalesInvoice(SellingController):
 									get_link_to_form(asset.doctype, asset.name),
 									get_link_to_form(self.doctype, self.get("name")),
 								)
-								depreciate_asset(asset, self.posting_date, notes)
+								date = self.posting_date
+
+								if date and self.docstatus == 2:
+									date = today()
+
+								depreciate_asset(asset, date, notes)
 								asset.reload()
 
 						fixed_asset_gl_entries = get_gl_entries_on_asset_disposal(
