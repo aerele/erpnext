@@ -336,7 +336,7 @@ def get_basic_details(ctx: ItemDetailsCtx, item, overwrite_warehouse=True) -> It
 	                "conversion_rate": 1.0,
 	                "selling_price_list": None,
 	                "price_list_currency": None,
-	                "price_list_uom_dependant": None,
+	                "price_not_uom_dependent": None,
 	                "plc_conversion_rate": 1.0,
 	                "doctype": "",
 	                "name": "",
@@ -955,6 +955,11 @@ def get_price_list_rate(ctx: ItemDetailsCtx, item_doc, out: ItemDetails = None):
 		if meta.get_field("currency"):
 			validate_conversion_rate(ctx, meta)
 
+		if ctx.get("price_not_uom_dependent") is not None and ctx.get("price_list"):
+			ctx.price_not_uom_dependent = frappe.get_cached_value(
+				"Price List", ctx.get("price_list"), "price_not_uom_dependent"
+			)
+
 		price_list_rate = get_price_list_rate_for(ctx, item_doc.name)
 
 		# variant
@@ -1039,7 +1044,7 @@ def insert_item_price(ctx: ItemDetailsCtx):
 
 
 def get_item_price(
-	pctx: ItemPriceCtx | dict, item_code, ignore_party=False, force_batch_no=False
+	pctx: ItemPriceCtx | dict, item_code, ignore_party=False, ignore_uom=False, force_batch_no=False
 ) -> list[dict]:
 	"""
 	Get name, price_list_rate from Item Price based on conditions
@@ -1054,11 +1059,7 @@ def get_item_price(
 	query = (
 		frappe.qb.from_(ip)
 		.select(ip.name, ip.price_list_rate, ip.uom)
-		.where(
-			(ip.item_code == item_code)
-			& (ip.price_list == pctx.price_list)
-			& (IfNull(ip.uom, "").isin(["", pctx.uom]))
-		)
+		.where((ip.item_code == item_code) & (ip.price_list == pctx.price_list))
 		.orderby(ip.valid_from, order=frappe.qb.desc)
 		.orderby(IfNull(ip.batch_no, ""), order=frappe.qb.desc)
 		.orderby(ip.uom, order=frappe.qb.desc)
@@ -1078,6 +1079,9 @@ def get_item_price(
 		else:
 			query = query.where((IfNull(ip.customer, "") == "") & (IfNull(ip.supplier, "") == ""))
 
+	if not ignore_uom:
+		query = query.where(IfNull(ip.uom, "").isin(["", pctx.uom]))
+
 	if pctx.transaction_date:
 		query = query.where(
 			(IfNull(ip.valid_from, "2000-01-01") <= pctx.transaction_date)
@@ -1090,10 +1094,15 @@ def get_item_price(
 @frappe.whitelist()
 def get_batch_based_item_price(pctx: ItemPriceCtx | dict | str, item_code) -> float:
 	pctx = parse_json(pctx)
+	price_not_uom_dependent = frappe.get_cached_value(
+		"Price List", pctx.price_list, "price_not_uom_dependent"
+	)
 
-	item_price = get_item_price(pctx, item_code, force_batch_no=True)
+	item_price = get_item_price(pctx, item_code, force_batch_no=True, ignore_uom=price_not_uom_dependent)
 	if not item_price:
-		item_price = get_item_price(pctx, item_code, ignore_party=True, force_batch_no=True)
+		item_price = get_item_price(
+			pctx, item_code, ignore_party=True, ignore_uom=price_not_uom_dependent, force_batch_no=True
+		)
 
 	is_free_item = pctx.get("items", [{}])[0].get("is_free_item")
 
@@ -1126,7 +1135,7 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 	)
 
 	item_price_data = 0
-	price_list_rate = get_item_price(pctx, item_code)
+	price_list_rate = get_item_price(pctx, item_code, ignore_uom=ctx.get("price_not_uom_dependent"))
 	if price_list_rate:
 		desired_qty = ctx.get("qty")
 		if desired_qty and check_packing_list(price_list_rate[0].name, desired_qty, item_code):
@@ -1135,11 +1144,21 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 		for field in ["customer", "supplier"]:
 			del pctx[field]
 
-		general_price_list_rate = get_item_price(pctx, item_code, ignore_party=ctx.get("ignore_party"))
+		general_price_list_rate = get_item_price(
+			pctx,
+			item_code,
+			ignore_party=ctx.get("ignore_party"),
+			ignore_uom=ctx.get("price_not_uom_dependent"),
+		)
 
 		if not general_price_list_rate and ctx.get("uom") != ctx.get("stock_uom"):
 			pctx.uom = ctx.get("stock_uom")
-			general_price_list_rate = get_item_price(pctx, item_code, ignore_party=ctx.get("ignore_party"))
+			general_price_list_rate = get_item_price(
+				pctx,
+				item_code,
+				ignore_party=ctx.get("ignore_party"),
+				ignore_uom=ctx.get("price_not_uom_dependent"),
+			)
 
 		if general_price_list_rate:
 			item_price_data = general_price_list_rate
@@ -1147,7 +1166,7 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 	if item_price_data:
 		if item_price_data[0].uom == ctx.get("uom"):
 			return item_price_data[0].price_list_rate
-		elif not ctx.get("price_list_uom_dependant"):
+		elif not ctx.get("price_not_uom_dependent"):
 			return flt(item_price_data[0].price_list_rate * flt(ctx.get("conversion_factor", 1)))
 		else:
 			return item_price_data[0].price_list_rate
@@ -1389,7 +1408,7 @@ def apply_price_list(ctx: ItemDetailsCtx, as_doc=False, doc=None):
 	                "conversion_rate": 1.0,
 	                "selling_price_list": None,
 	                "price_list_currency": None,
-	                "price_list_uom_dependant": None,
+	                "price_not_uom_dependent": None,
 	                "plc_conversion_rate": 1.0,
 	                "doctype": "",
 	                "name": "",
@@ -1451,7 +1470,7 @@ def get_price_list_currency_and_exchange_rate(ctx: ItemDetailsCtx):
 	price_list_details = get_price_list_details(ctx.price_list)
 
 	price_list_currency = price_list_details.get("currency")
-	price_list_uom_dependant = price_list_details.get("price_list_uom_dependant")
+	price_not_uom_dependent = price_list_details.get("price_not_uom_dependent")
 
 	plc_conversion_rate = ctx.plc_conversion_rate
 	company_currency = get_company_currency(ctx.company)
@@ -1468,7 +1487,7 @@ def get_price_list_currency_and_exchange_rate(ctx: ItemDetailsCtx):
 	return frappe._dict(
 		{
 			"price_list_currency": price_list_currency,
-			"price_list_uom_dependant": price_list_uom_dependant,
+			"price_not_uom_dependent": price_not_uom_dependent,
 			"plc_conversion_rate": plc_conversion_rate or 1,
 		}
 	)
