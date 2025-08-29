@@ -823,6 +823,30 @@ frappe.ui.form.on("Stock Entry", {
 			refresh_field("process_loss_qty");
 		}
 	},
+
+	recalculate_totals(frm) {
+		let total_incoming = 0.0;
+		let total_outgoing = 0.0;
+
+		(frm.doc.items || []).forEach(function (d) {
+			d.stock_qty = flt(d.qty) * flt(d.conversion_factor || 1);
+
+			d.amount = flt(d.qty) * flt(d.basic_rate);
+
+			if (d.t_warehouse) {
+				total_incoming += d.amount;
+			}
+			if (d.s_warehouse) {
+				total_outgoing += d.amount;
+			}
+		});
+
+		frm.set_value("total_incoming_value", total_incoming);
+		frm.set_value("total_outgoing_value", total_outgoing);
+		frm.set_value("value_difference", total_incoming - total_outgoing);
+
+		frm.refresh_field("items");
+	},
 });
 
 frappe.ui.form.on("Stock Entry Detail", {
@@ -837,6 +861,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 
 	qty(frm, cdt, cdn) {
 		frm.events.set_basic_rate(frm, cdt, cdn);
+		frm.events.recalculate_totals(frm);
 	},
 
 	conversion_factor(frm, cdt, cdn) {
@@ -860,6 +885,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 	basic_rate(frm, cdt, cdn) {
 		var item = locals[cdt][cdn];
 		frm.events.calculate_basic_amount(frm, item);
+		frm.events.recalculate_totals(frm);
 	},
 
 	uom(doc, cdt, cdn) {
@@ -1088,8 +1114,6 @@ erpnext.stock.StockEntry = class StockEntry extends erpnext.stock.StockControlle
 		}
 		erpnext.hide_company(this.frm);
 		erpnext.utils.add_item(this.frm);
-		erpnext.accounts.ledger_preview.show_accounting_ledger_preview(this.frm);
-		erpnext.accounts.ledger_preview.show_stock_ledger_preview(this.frm);
 	}
 
 	serial_no(doc, cdt, cdn) {
