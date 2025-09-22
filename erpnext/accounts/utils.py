@@ -946,19 +946,26 @@ def update_accounting_ledgers_after_reference_removal(
 	adv_ple.run()
 
 
-def remove_ref_from_advance_section(ref_doc: object = None):
+def remove_ref_from_advance_section(ref_doc: object = None, payment_name: str | None = None):
 	# TODO: this might need some testing
 	if ref_doc.doctype in ("Sales Invoice", "Purchase Invoice"):
+		rem_adv = []
+		for adv in ref_doc.get("advances", []):
+			if getattr(adv, "reference_name", None) != payment_name:
+				rem_adv.append(adv)
+		ref_doc.set("advances", rem_adv)
+	else:
 		ref_doc.set("advances", [])
-		adv_type = qb.DocType(f"{ref_doc.doctype} Advance")
-		qb.from_(adv_type).delete().where(adv_type.parent == ref_doc.name).run()
 
 
 def unlink_ref_doc_from_payment_entries(ref_doc: object = None, payment_name: str | None = None):
 	remove_ref_doc_link_from_jv(ref_doc.doctype, ref_doc.name, payment_name)
 	remove_ref_doc_link_from_pe(ref_doc.doctype, ref_doc.name, payment_name)
 	update_accounting_ledgers_after_reference_removal(ref_doc.doctype, ref_doc.name, payment_name)
-	remove_ref_from_advance_section(ref_doc)
+	remove_ref_from_advance_section(ref_doc, payment_name)
+	if getattr(ref_doc, "_action", None) != "cancel":
+		ref_doc.flags.ignore_validate_update_after_submit = True
+		ref_doc.save()
 
 
 def remove_ref_doc_link_from_jv(

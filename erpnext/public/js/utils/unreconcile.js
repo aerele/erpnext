@@ -162,6 +162,15 @@ erpnext.accounts.unreconcile_payment = {
 			args: {
 				selections: selection_map,
 			},
+			callback: function () {
+				if (cur_frm) {
+					cur_frm.reload_doc().then(() => {
+						if (cur_frm.doc && cur_frm.doc.advances) {
+							cur_frm.refresh_field("advances");
+						}
+					});
+				}
+			},
 		});
 	},
 };
