@@ -457,7 +457,8 @@
    "fieldname": "credit_limits",
    "fieldtype": "Table",
    "label": "Credit Limit",
-   "options": "Customer Credit Limit"
+   "options": "Customer Credit Limit",
+   "no_copy": 1
   },
   {
    "default": "0",
@@ -618,7 +619,7 @@
    "link_fieldname": "party"
   }
  ],
- "modified": "2025-04-27 12:01:29.549008",
+ "modified": "2025-09-22 12:40:21.257007",
  "modified_by": "Administrator",
  "module": "Selling",
  "name": "Customer",
