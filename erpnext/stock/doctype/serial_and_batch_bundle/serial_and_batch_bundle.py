@@ -294,7 +294,7 @@ class SerialandBatchBundle(Document):
 		)
 		if deliver_serials:
 			for serial_no in deliver_serials:
-				self.throw_error_message(
+				frappe.throw(
 					f"Serial No {bold(serial_no)} is already delivered.",
 					SerialNoDuplicateError,
 				)
