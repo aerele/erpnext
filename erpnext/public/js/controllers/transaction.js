@@ -1069,7 +1069,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			if (me.frm.doc.doctype == "Quotation" && me.frm.doc.quotation_to == "Customer") {
 				(party_type = "Customer"), (party_name = me.frm.doc.party_name);
 			} else {
-				party_type = frappe.meta.has_field(me.frm.doc.doctype, "supplier") ? "Supplier" : "Customer";
+				party_type = frappe.meta.has_field(me.frm.doc.doctype, "customer") ? "Customer" : "Supplier";
 				party_name = me.frm.doc[party_type.toLowerCase()];
 			}
 			if (party_name) {
@@ -1170,7 +1170,8 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 		if (
 			frappe.meta.get_docfield(this.frm.doctype, "shipping_address") &&
-			["Purchase Order", "Purchase Receipt", "Purchase Invoice"].includes(this.frm.doctype)
+			["Purchase Order", "Purchase Receipt", "Purchase Invoice"].includes(this.frm.doctype) &&
+			!this.frm.doc.shipping_address
 		) {
 			let is_drop_ship = me.frm.doc.items.some((item) => item.delivered_by_supplier);
 
