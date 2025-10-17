@@ -214,13 +214,23 @@ erpnext.buying = {
 
 			discount_percentage(doc, cdt, cdn) {
 				var item = frappe.get_doc(cdt, cdn);
-				item.discount_amount = 0.0;
+				item.discount_percentage_manually_set = true;
+				item.rate = flt(
+					item.price_list_rate * (1 - item.discount_percentage / 100.0),
+					precision("rate", item)
+				);
+				item.discount_amount = flt(item.price_list_rate) - flt(item.rate);
 				this.price_list_rate(doc, cdt, cdn);
 			}
 
 			discount_amount(doc, cdt, cdn) {
 				var item = frappe.get_doc(cdt, cdn);
-				item.discount_percentage = 0.0;
+				item.discount_percentage_manually_set = false;
+				item.rate = flt(item.price_list_rate - item.discount_amount);
+				if (item.price_list_rate) {
+					item.discount_percentage = (100 * flt(item.discount_amount)) / flt(item.price_list_rate);
+					precision("rate", item);
+				}
 				this.price_list_rate(doc, cdt, cdn);
 			}
 

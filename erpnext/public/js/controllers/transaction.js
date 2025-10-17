@@ -833,9 +833,14 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	price_list_rate(doc, cdt, cdn) {
 		var item = frappe.get_doc(cdt, cdn);
 		frappe.model.round_floats_in(item, ["price_list_rate", "discount_percentage"]);
-
-		// check if child doctype is Sales Order Item/Quotation Item and calculate the rate
-		if (
+		if (item.discount_percentage_manually_set) {
+			item.rate = flt(
+				item.price_list_rate * (1 - item.discount_percentage / 100.0),
+				precision("rate", item)
+			);
+			item.discount_amount = flt(item.price_list_rate) - flt(item.rate);
+		} else {
+			// check if child doctype is Sales Order Item/Quotation Item and calculate the rate
 			(in_list([
 				"Quotation Item",
 				"Sales Order Item",
@@ -847,14 +852,12 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 				"Purchase Receipt Item",
 			]),
 			cdt)
-		)
-			this.apply_pricing_rule_on_item(item);
-		else
-			item.rate = flt(
-				item.price_list_rate * (1 - item.discount_percentage / 100.0),
-				precision("rate", item)
-			);
-
+				? this.apply_pricing_rule_on_item(item)
+				: (item.rate = flt(
+						item.price_list_rate * (1 - item.discount_percentage / 100.0),
+						precision("rate", item)
+				  ));
+		}
 		this.calculate_taxes_and_totals();
 	}
 
