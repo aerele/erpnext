@@ -627,7 +627,7 @@ class ReceivablePayableReport:
 			f"""
 			select
 				si.name, si.party_account_currency, si.currency, si.conversion_rate,
-				si.total_advance, ps.due_date, ps.payment_term, ps.payment_amount, ps.base_payment_amount,
+				si.total_advance, si.taxes_and_charges_deducted, ps.due_date, ps.payment_term, ps.payment_amount, ps.base_payment_amount,
 				ps.description, ps.paid_amount, ps.base_paid_amount, ps.discounted_amount
 			from `tab{row.voucher_type}` si, `tabPayment Schedule` ps
 			where
@@ -650,6 +650,9 @@ class ReceivablePayableReport:
 		# Advance allocated during invoicing is not considered in payment terms
 		# Deduct that from paid amount pre allocation
 		row.paid -= flt(payment_terms_details[0].total_advance)
+		# Taxes and charges deducted during invoicing is not considered in payment terms
+		# Deduct that from paid amount pre allocation
+		row.paid -= flt(payment_terms_details[0].taxes_and_charges_deducted)
 
 		company_currency = frappe.get_value("Company", self.filters.get("company"), "default_currency")
 
