@@ -65,8 +65,10 @@ class AccountsSettings(Document):
 		role_allowed_to_over_bill: DF.Link | None
 		role_to_override_stop_action: DF.Link | None
 		round_row_wise_tax: DF.Check
+		show_account_balance: DF.Check
 		show_balance_in_coa: DF.Check
 		show_inclusive_tax_in_print: DF.Check
+		show_party_balance: DF.Check
 		show_payment_schedule_in_print: DF.Check
 		show_taxes_as_table_in_print: DF.Check
 		stale_days: DF.Int
@@ -105,6 +107,7 @@ class AccountsSettings(Document):
 			frappe.clear_cache()
 
 		self.validate_and_sync_auto_reconcile_config()
+		self.hide_party_and_account_balance()
 
 	def validate_stale_days(self):
 		if not self.allow_stale and cint(self.stale_days) <= 0:
@@ -126,6 +129,18 @@ class AccountsSettings(Document):
 				"Check",
 				validate_fields_for_doctype=False,
 			)
+
+	def hide_party_and_account_balance(self):
+		def set_property(fieldname, value):
+			make_property_setter("Payment Entry", fieldname, "hidden", value, "Check")
+
+		if self.has_value_changed("show_party_balance"):
+			set_property("party_balance", not self.show_party_balance)
+
+		if self.has_value_changed("show_account_balance"):
+			account_fields = ["paid_from_account_balance", "paid_to_account_balance"]
+			for field in account_fields:
+				set_property(field, not self.show_account_balance)
 
 	def validate_pending_reposts(self):
 		if self.acc_frozen_upto:

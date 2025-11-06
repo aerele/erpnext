@@ -56,6 +56,9 @@
   "reconciliation_queue_size",
   "column_break_resa",
   "exchange_gain_loss_posting_date",
+  "payment_entry_section_section",
+  "show_party_balance",
+  "show_account_balance",
   "invoicing_settings_tab",
   "accounts_transactions_settings_section",
   "over_billing_allowance",
@@ -95,7 +98,8 @@
   "legacy_section",
   "ignore_is_opening_check_for_reporting",
   "payment_request_settings",
-  "create_pr_in_draft_status"
+  "create_pr_in_draft_status",
+  "column_break_xrnd"
  ],
  "fields": [
   {
@@ -636,6 +640,23 @@
    "fieldname": "use_legacy_controller_for_pcv",
    "fieldtype": "Check",
    "label": "Use Legacy Controller For Period Closing Voucher"
+  },
+  {
+   "fieldname": "payment_entry_section_section",
+   "fieldtype": "Section Break",
+   "label": "Payment Entry Section "
+  },
+  {
+   "default": "0",
+   "fieldname": "show_party_balance",
+   "fieldtype": "Check",
+   "label": "Show Party Balance"
+  },
+  {
+   "default": "0",
+   "fieldname": "show_account_balance",
+   "fieldtype": "Check",
+   "label": "Show Account Balance"
   }
  ],
  "icon": "icon-cog",
@@ -643,7 +664,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-10-20 14:06:08.870427",
+ "modified": "2025-11-06 15:40:53.692996",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Accounts Settings",
@@ -668,6 +689,8 @@
   }
  ],
  "quick_entry": 1,
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "ASC",
  "states": [],
