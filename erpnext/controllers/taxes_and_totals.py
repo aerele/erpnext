@@ -398,6 +398,9 @@ class calculate_taxes_and_totals:
 			self._calculate()
 
 	def calculate_taxes(self):
+		# reset value from earlier calculations
+		self.grand_total_diff = 0
+
 		doc = self.doc
 		if not doc.get("taxes"):
 			return
@@ -684,7 +687,7 @@ class calculate_taxes_and_totals:
 				self.grand_total_diff = 0
 
 	def calculate_totals(self):
-		grand_total_diff = getattr(self, "grand_total_diff", 0)
+		grand_total_diff = self.grand_total_diff
 
 		if self.doc.get("taxes"):
 			self.doc.grand_total = flt(self.doc.get("taxes")[-1].total) + grand_total_diff
@@ -941,12 +944,11 @@ class calculate_taxes_and_totals:
 					)
 				)
 
-			if self.doc.docstatus.is_draft():
-				if self.doc.get("write_off_outstanding_amount_automatically"):
-					self.doc.write_off_amount = 0
+			if self.doc.get("write_off_outstanding_amount_automatically"):
+				self.doc.write_off_amount = 0
 
-				self.calculate_outstanding_amount()
-				self.calculate_write_off_amount()
+			self.calculate_outstanding_amount()
+			self.calculate_write_off_amount()
 
 	def is_internal_invoice(self):
 		"""
