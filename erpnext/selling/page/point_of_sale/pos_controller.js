@@ -39,7 +39,7 @@ erpnext.PointOfSale.Controller = class {
 				fieldtype: "Currency",
 				in_list_view: 1,
 				label: __("Opening Amount"),
-				options: "company:company_currency",
+				options: "Company:company:default_currency",
 				onchange: function () {
 					dialog.fields_dict.balance_details.df.data.some((d) => {
 						if (d.idx == this.doc.idx) {
@@ -119,6 +119,44 @@ erpnext.PointOfSale.Controller = class {
 			primary_action_label: __("Submit"),
 		});
 		dialog.show();
+
+		// Set currency option for opening_amount to company's default currency
+		const set_currency_option = async () => {
+			const company = dialog.fields_dict.company.get_value() || frappe.defaults.get_default("company");
+
+			if (!company) return;
+			try {
+				const company_doc = await frappe.db.get_doc("Company", company).catch((e) => {
+					return null;
+				});
+
+				frappe.defaults.set_user_default_local &&
+					frappe.defaults.set_user_default_local("company", company);
+				const cached_default_currency = frappe.model.get_value(
+					"Company",
+					company,
+					"default_currency"
+				);
+			} catch (e) {
+				console.warn("POS Opening: unexpected error while fetching company:", e);
+			}
+			const table_df = dialog.fields_dict.balance_details.df;
+			if (table_df && table_df.fields) {
+				table_df.fields.forEach((f) => {
+					if (f.fieldname === "opening_amount") {
+						f.options = "Company:company:default_currency";
+					}
+				});
+				dialog.fields_dict.balance_details.grid.refresh();
+			}
+		};
+
+		set_currency_option();
+		if (dialog.fields_dict.company.$input) {
+			dialog.fields_dict.company.$input.on("change", () => {
+				set_currency_option();
+			});
+		}
 		const pos_profile_query = () => {
 			return {
 				query: "erpnext.accounts.doctype.pos_profile.pos_profile.pos_profile_query",
