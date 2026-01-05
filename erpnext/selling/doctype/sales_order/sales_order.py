@@ -234,6 +234,7 @@ class SalesOrder(SellingController):
 		self.validate_drop_ship()
 		self.validate_reserved_stock()
 		self.validate_serial_no_based_delivery()
+		self.validate_against_quotation_qty()
 		validate_against_blanket_order(self)
 		validate_inter_company_party(
 			self.doctype, self.customer, self.company, self.inter_company_order_reference
@@ -293,6 +294,34 @@ class SalesOrder(SellingController):
 			for item in self.items:
 				item.set("fg_item", None)
 				item.set("fg_item_qty", 0)
+
+	def validate_against_quotation_qty(self):
+		for item in self.items:
+			if not item.quotation_item:
+				continue
+
+			quotation_qty = frappe.db.get_value("Quotation Item", item.quotation_item, "qty")
+
+			ordered_qty = (
+				frappe.db.sql(
+					"""
+				SELECT SUM(qty)
+				FROM `tabSales Order Item`
+				WHERE quotation_item = %s
+				AND docstatus = 1
+				AND parent != %s
+				""",
+					(item.quotation_item, self.name),
+				)[0][0]
+				or 0
+			)
+
+			if ordered_qty + item.qty > quotation_qty:
+				frappe.throw(
+					_("Cannot submit Sales Order. Item {0} exceeds the quoted quantity.").format(
+						item.item_code
+					)
+				)
 
 	def enable_auto_reserve_stock(self):
 		if self.is_new() and frappe.get_single_value("Stock Settings", "auto_reserve_stock"):
