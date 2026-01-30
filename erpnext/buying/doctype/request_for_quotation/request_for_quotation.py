@@ -304,12 +304,18 @@ class RequestforQuotation(BuyingController):
 		else:
 			sender = frappe.session.user not in STANDARD_USERS and frappe.session.user or None
 
+		rendered_message = frappe.render_template(self.message_for_supplier, doc_args)
+		subject_source = (
+			self.subject
+			or frappe.get_value("Email Template", self.email_template, "subject")
+			or _("Request for Quotation")
+		)
+		rendered_subject = frappe.render_template(subject_source, doc_args)
+
 		if preview:
 			return {
-				"message": self.message_for_supplier,
-				"subject": self.subject
-				or frappe.get_value("Email Template", self.email_template, "subject")
-				or _("Request for Quotation"),
+				"message": rendered_message,
+				"subject": rendered_subject,
 			}
 
 		attachments = []
