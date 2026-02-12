@@ -8,6 +8,10 @@ frappe.pages["sales-funnel"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
+	// ensure layout has Bootstrap row and column classes before view init
+	$(wrapper).find(".layout-main").addClass("row");
+	$(wrapper).find(".layout-main-section-wrapper").addClass("col-md-12");
+
 	wrapper.sales_funnel = new erpnext.SalesFunnel(wrapper);
 
 	frappe.breadcrumbs.add("Selling");
