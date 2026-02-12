@@ -18,7 +18,6 @@ class PricingRuleItemGroup(Document):
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		uom: DF.Link | None
 	# end: auto-generated types
 
 	pass
