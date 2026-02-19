@@ -376,7 +376,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		const me = this;
 		if (
 			!this.frm.is_new() &&
-			(this.frm.doc.docstatus === 0 || this.frm.doc.__onload?.allow_to_make_qc_after_submission) &&
+			this.frm.doc.docstatus === 0 &&
 			frappe.model.can_create("Quality Inspection") &&
 			show_qc_button
 		) {
