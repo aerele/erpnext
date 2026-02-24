@@ -263,7 +263,13 @@ class FIFOSlots:
 			for d in stock_ledger_entries:
 				key, fifo_queue, transferred_item_key = self.__init_key_stores(d)
 
-				if d.voucher_type == "Stock Reconciliation":
+				if d.voucher_type == "Stock Reconciliation" and (
+					not d.batch_no and not d.serial_no and not d.serial_and_batch_bundle
+				):
+					# clear fifo queue for non serial and batch item
+					d.actual_qty = d.qty_after_transaction
+					fifo_queue.clear()
+				elif d.voucher_type == "Stock Reconciliation":
 					# get difference in qty shift as actual qty
 					prev_balance_qty = self.item_details[key].get("qty_after_transaction", 0)
 					d.actual_qty = flt(d.qty_after_transaction) - flt(prev_balance_qty)
