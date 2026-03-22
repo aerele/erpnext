@@ -75,6 +75,37 @@ class TestDeliveryNote(ERPNextTestSuite):
 		self.sdbnb_income_account = f"Sales - {self.SDBNB_COMPANY_ABBR}"
 		self.sdbnb_debit_to = f"Debtors - {self.SDBNB_COMPANY_ABBR}"
 
+	SDBNB_COMPANY_NAME = "_Test SDBNB Company"
+	SDBNB_COMPANY_ABBR = "_TSDBNB"
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls._setup_sdbnb_company()
+
+	@classmethod
+	def _setup_sdbnb_company(cls):
+		if frappe.db.exists("Company", cls.SDBNB_COMPANY_NAME):
+			company = frappe.get_doc("Company", cls.SDBNB_COMPANY_NAME)
+		else:
+			company = frappe.get_doc(
+				{
+					"doctype": "Company",
+					"company_name": cls.SDBNB_COMPANY_NAME,
+					"abbr": cls.SDBNB_COMPANY_ABBR,
+					"country": "India",
+					"default_currency": "INR",
+				}
+			).insert()
+
+		cls.sdbnb_company = company.name
+		cls.sdbnb_account = company.stock_delivered_but_not_billed
+		cls.sdbnb_cost_center = company.cost_center
+		cls.sdbnb_warehouse = f"Stores - {cls.SDBNB_COMPANY_ABBR}"
+		cls.sdbnb_expense_account = f"Cost of Goods Sold - {cls.SDBNB_COMPANY_ABBR}"
+		cls.sdbnb_income_account = f"Sales - {cls.SDBNB_COMPANY_ABBR}"
+		cls.sdbnb_debit_to = f"Debtors - {cls.SDBNB_COMPANY_ABBR}"
+
 	def test_delivery_note_qty(self):
 		dn = create_delivery_note(qty=0, do_not_save=True)
 		with self.assertRaises(InvalidQtyError):
