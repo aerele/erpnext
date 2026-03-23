@@ -558,6 +558,9 @@ def _update_post_delivery_billed_vouchers(transactions: list) -> None:
 		if voucher_type == "Delivery Note":
 			dn_vouchers.add(voucher_no)
 
+	if not dn_vouchers:
+		return
+
 	sii = DocType("Sales Invoice Item")
 	query = (
 		frappe.qb.from_(sii)
