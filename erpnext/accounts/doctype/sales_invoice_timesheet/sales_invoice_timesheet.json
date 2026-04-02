@@ -52,7 +52,6 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "Timesheet Detail",
-   "no_copy": 1,
    "print_hide": 1,
    "read_only": 1
   },

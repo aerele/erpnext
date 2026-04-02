@@ -91,7 +91,7 @@
    "in_standard_filter": 1,
    "label": "Status",
    "no_copy": 1,
-   "options": "Draft\nSubmitted\nBilled\nPayslip\nCompleted\nCancelled",
+  "options": "Draft\nSubmitted\nPartially Billed\nBilled\nPayslip\nCompleted\nCancelled",
    "print_hide": 1,
    "read_only": 1
   },
