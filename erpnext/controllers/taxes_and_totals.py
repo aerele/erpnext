@@ -175,7 +175,6 @@ class calculate_taxes_and_totals:
 							item.price_list_rate * (1.0 - (item.discount_percentage / 100.0)),
 							item.precision("rate"),
 						)
-
 						item.discount_amount = item.price_list_rate * (item.discount_percentage / 100.0)
 
 					elif item.discount_amount and item.pricing_rules:
@@ -234,6 +233,8 @@ class calculate_taxes_and_totals:
 				)
 
 				item.item_tax_amount = 0.0
+		
+		
 
 	def _set_in_company_currency(self, doc, fields):
 		"""set values in base currency"""
@@ -1090,9 +1091,18 @@ class calculate_taxes_and_totals:
 		if item.price_list_rate:
 			if item.pricing_rules and not self.doc.ignore_pricing_rule:
 				has_margin = False
-				for d in get_applied_pricing_rules(item.pricing_rules):
-					pricing_rule = frappe.get_cached_doc("Pricing Rule", d)
+				accumulated_margin = 0.0
 
+				# get pricing rule docs and sort by priority high to low
+				applied_rules_docs = []
+				for d in get_applied_pricing_rules(item.pricing_rules):
+					if d and frappe.db.exists("Pricing Rule", d):
+						applied_rules_docs.append(frappe.get_cached_doc("Pricing Rule", d))
+				def by_priority(rule):
+					return cint(rule.priority)
+				applied_rules_docs.sort(key=by_priority, reverse=True)
+
+				for pricing_rule in applied_rules_docs:
 					if pricing_rule.margin_rate_or_amount and (
 						(
 							pricing_rule.currency == self.doc.currency
@@ -1100,11 +1110,27 @@ class calculate_taxes_and_totals:
 						)
 						or pricing_rule.margin_type == "Percentage"
 					):
-						item.margin_type = pricing_rule.margin_type
-						item.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
 						has_margin = True
+						if pricing_rule.apply_margin_on_marginalized_rate and item.price_list_rate:
+							current_rate_with_margin = flt(item.price_list_rate) + accumulated_margin
 
-				if not has_margin:
+							if pricing_rule.margin_type == "Percentage":
+								new_margin = current_rate_with_margin * (pricing_rule.margin_rate_or_amount / 100.0)
+							else:
+								new_margin = pricing_rule.margin_rate_or_amount
+
+							accumulated_margin += flt(new_margin)
+						else:
+							if pricing_rule.margin_type == "Percentage" and item.price_list_rate:
+								new_margin = flt(item.price_list_rate) * (pricing_rule.margin_rate_or_amount / 100.0)
+								accumulated_margin += flt(new_margin)
+							else:
+								accumulated_margin += pricing_rule.margin_rate_or_amount
+
+				if has_margin:
+					item.margin_type = "Amount"
+					item.margin_rate_or_amount = flt(accumulated_margin)
+				else:
 					item.margin_type = None
 					item.margin_rate_or_amount = 0.0
 
