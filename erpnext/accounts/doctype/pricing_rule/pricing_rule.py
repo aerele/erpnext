@@ -24,26 +24,15 @@ class PricingRule(Document):
 	from typing import TYPE_CHECKING
 
 	if TYPE_CHECKING:
-		from frappe.types import DF
-
 		from erpnext.accounts.doctype.pricing_rule_brand.pricing_rule_brand import PricingRuleBrand
 		from erpnext.accounts.doctype.pricing_rule_item_code.pricing_rule_item_code import PricingRuleItemCode
-		from erpnext.accounts.doctype.pricing_rule_item_group.pricing_rule_item_group import (
-			PricingRuleItemGroup,
-		)
+		from erpnext.accounts.doctype.pricing_rule_item_group.pricing_rule_item_group import PricingRuleItemGroup
+		from frappe.types import DF
 
-		applicable_for: DF.Literal[
-			"",
-			"Customer",
-			"Customer Group",
-			"Territory",
-			"Sales Partner",
-			"Campaign",
-			"Supplier",
-			"Supplier Group",
-		]
+		applicable_for: DF.Literal["", "Customer", "Customer Group", "Territory", "Sales Partner", "Campaign", "Supplier", "Supplier Group"]
 		apply_discount_on: DF.Literal["Grand Total", "Net Total"]
 		apply_discount_on_rate: DF.Check
+		apply_margin_on_marginalized_rate: DF.Check
 		apply_multiple_pricing_rules: DF.Check
 		apply_on: DF.Literal["Item Code", "Item Group", "Brand", "Transaction"]
 		apply_recursion_over: DF.Float
@@ -83,29 +72,7 @@ class PricingRule(Document):
 		other_item_code: DF.Link | None
 		other_item_group: DF.Link | None
 		price_or_product_discount: DF.Literal["Price", "Product"]
-		priority: DF.Literal[
-			"",
-			"1",
-			"2",
-			"3",
-			"4",
-			"5",
-			"6",
-			"7",
-			"8",
-			"9",
-			"10",
-			"11",
-			"12",
-			"13",
-			"14",
-			"15",
-			"16",
-			"17",
-			"18",
-			"19",
-			"20",
-		]
+		priority: DF.Literal["", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]
 		promotional_scheme: DF.Link | None
 		promotional_scheme_id: DF.Data | None
 		rate: DF.Currency
@@ -141,9 +108,58 @@ class PricingRule(Document):
 		self.validate_dates()
 		self.validate_condition()
 		self.validate_mixed_with_recursion()
+		self.validate_priority_conflict()
 
 		if not self.margin_type:
 			self.margin_rate_or_amount = 0.0
+
+	def validate_priority_conflict(self):
+		if not self.priority or not self.has_priority:
+			return
+
+		apply_on_field = frappe.scrub(self.apply_on)
+		apply_on_table = apply_on_dict.get(self.apply_on)
+
+		if not apply_on_table:
+			return
+
+		items_in_this_rule = [d.get(apply_on_field) for d in self.get(apply_on_table)]
+
+		for item_value in items_in_this_rule:
+			# if there are other rules with same prority , conflict throw
+			conflicting_rules = frappe.db.sql("""
+				select pr.name
+				from `tabPricing Rule` pr
+				inner join `tab{child_doc}` child
+					on child.parent = pr.name
+				where pr.name != %(name)s
+					and pr.priority = %(priority)s
+					and pr.disable = 0
+					and pr.apply_on = %(apply_on)s
+					and pr.selling = %(selling)s
+					and pr.buying = %(buying)s
+					and child.{apply_on_field} = %(item_value)s
+			""".format(
+				child_doc=f"Pricing Rule {self.apply_on}",
+				apply_on_field=apply_on_field
+			), {
+				"name": self.name,
+				"priority": self.priority,
+				"apply_on": self.apply_on,
+				"selling": self.selling,
+				"buying": self.buying,
+				"item_value": item_value,
+			}, as_dict=1)
+
+			if conflicting_rules:
+				frappe.throw(
+					_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
+						self.priority,
+						self.apply_on,
+						frappe.bold(item_value),
+						frappe.bold(conflicting_rules[0].name)
+					)
+				)
 
 	def validate_duplicate_apply_on(self):
 		if self.apply_on != "Transaction":
@@ -157,6 +173,12 @@ class PricingRule(Document):
 				frappe.throw(_("Duplicate {0} found in the table").format(self.apply_on))
 
 	def validate_mandatory(self):
+		if self.apply_multiple_pricing_rules and not self.has_priority:
+			throw(_("As the field {0} is enabled, the field {1} is mandatory.").format(
+				frappe.bold(_("Apply Multiple Pricing Rules")), frappe.bold(_("Priority"))
+			))
+
+		
 		if self.has_priority and not self.priority:
 			throw(_("Priority is mandatory"), frappe.MandatoryError, _("Please Set Priority"))
 
@@ -442,7 +464,6 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 		for pricing_rule in pricing_rules:
 			if not pricing_rule:
 				continue
-
 			if isinstance(pricing_rule, str):
 				pricing_rule = frappe.get_cached_doc("Pricing Rule", pricing_rule)
 				update_pricing_rule_uom(pricing_rule, args)
@@ -554,7 +575,37 @@ def get_pricing_rule_details(args, pricing_rule):
 
 
 def apply_price_discount_rule(pricing_rule, item_details, args):
+	
 	item_details.pricing_rule_for = pricing_rule.rate_or_discount
+
+	# if (pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency) or (
+	# 	pricing_rule.margin_type == "Percentage"
+	# ):
+	# 	item_details.margin_type = pricing_rule.margin_type
+	# 	item_details.has_margin = True
+
+	# 	if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
+	# 		item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
+	# 	else:
+	# 		item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
+
+	# if pricing_rule.rate_or_discount == "Rate":
+	# 	pricing_rule_rate = 0.0
+	# 	if pricing_rule.currency == args.currency:
+	# 		pricing_rule_rate = pricing_rule.rate
+
+	# 	# TODO https://github.com/frappe/erpnext/pull/23636 solve this in some other way.
+	# 	if pricing_rule_rate:
+	# 		is_blank_uom = pricing_rule.get("uom") != args.get("uom")
+	# 		# Override already set price list rate (from item price)
+	# 		# if pricing_rule_rate > 0
+	# 		item_details.update(
+	# 			{
+	# 				"price_list_rate": pricing_rule_rate
+	# 				* (args.get("conversion_factor", 1) if is_blank_uom else 1),
+	# 			}
+	# 		)
+	# 	item_details.update({"discount_percentage": 0.0})
 
 	if (pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency) or (
 		pricing_rule.margin_type == "Percentage"
@@ -562,21 +613,40 @@ def apply_price_discount_rule(pricing_rule, item_details, args):
 		item_details.margin_type = pricing_rule.margin_type
 		item_details.has_margin = True
 
-		if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
-			item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
+		price_list_rate = flt(args.get("price_list_rate", 0))
+		accumulated_margin = flt(item_details.get("margin_rate_or_amount", 0))
+
+		if pricing_rule.apply_margin_on_marginalized_rate and price_list_rate:
+			# sequential compounding — apply on already marginalized rate
+			current_rate_with_margin = price_list_rate + accumulated_margin
+			
+			if pricing_rule.margin_type == "Percentage":
+				new_margin = current_rate_with_margin * (pricing_rule.margin_rate_or_amount / 100.0)
+			else:
+				new_margin = pricing_rule.margin_rate_or_amount
+
+			item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
 		else:
-			item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
+			# flat additive
+			if pricing_rule.margin_type == "Percentage" and price_list_rate:
+				new_margin = price_list_rate * (pricing_rule.margin_rate_or_amount / 100.0)
+				item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
+			else:
+				if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
+					item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
+				else:
+					item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
+
+		# always set margin_type to Amount since , converted percentages to amounts
+		item_details.margin_type = "Amount"
 
 	if pricing_rule.rate_or_discount == "Rate":
 		pricing_rule_rate = 0.0
 		if pricing_rule.currency == args.currency:
 			pricing_rule_rate = pricing_rule.rate
 
-		# TODO https://github.com/frappe/erpnext/pull/23636 solve this in some other way.
 		if pricing_rule_rate:
 			is_blank_uom = pricing_rule.get("uom") != args.get("uom")
-			# Override already set price list rate (from item price)
-			# if pricing_rule_rate > 0
 			item_details.update(
 				{
 					"price_list_rate": pricing_rule_rate
@@ -590,32 +660,42 @@ def apply_price_discount_rule(pricing_rule, item_details, args):
 			continue
 
 		field = frappe.scrub(apply_on)
-		if pricing_rule.apply_discount_on_rate and item_details.get("discount_percentage"):
-			# Apply discount on discounted rate
-			item_details[field] += (100 - item_details[field]) * (pricing_rule.get(field, 0) / 100)
-		elif args.price_list_rate:
-			value = pricing_rule.get(field, 0)
-			calculate_discount_percentage = False
-			if field == "discount_percentage":
-				field = "discount_amount"
-				value = args.price_list_rate * (value / 100)
-				calculate_discount_percentage = True
+		price_list_rate = flt(args.get("price_list_rate", 0))
 
+		if not price_list_rate:
 			if field not in item_details:
 				item_details.setdefault(field, 0)
-
-			item_details[field] += value if pricing_rule else args.get(field, 0)
-			if calculate_discount_percentage and args.price_list_rate and item_details.discount_amount:
-				item_details.discount_percentage = flt(
-					(flt(item_details.discount_amount) / flt(args.price_list_rate)) * 100
-				)
-		else:
-			if field not in item_details:
-				item_details.setdefault(field, 0)
-
 			item_details[field] += pricing_rule.get(field, 0) if pricing_rule else args.get(field, 0)
+			return
 
+		accumulated_discount_amount = flt(item_details.get("discount_amount", 0))
 
+		if pricing_rule.apply_discount_on_rate:
+			# sequential compounding — each rule applies on what previous rule left
+			current_effective_rate = price_list_rate - accumulated_discount_amount
+
+			if field == "discount_percentage":
+				new_effective_rate = current_effective_rate * (
+					1.0 - (pricing_rule.discount_percentage / 100.0)
+				)
+			else:
+				new_effective_rate = current_effective_rate - pricing_rule.discount_amount
+
+			item_details.discount_amount = flt(price_list_rate - new_effective_rate)
+		else:
+			# flat additive — all percentages on price_list_rate
+			if field == "discount_percentage":
+				item_details.discount_amount = accumulated_discount_amount + flt(
+					price_list_rate * (pricing_rule.discount_percentage / 100.0)
+				)
+			else:
+				item_details.discount_amount = accumulated_discount_amount + flt(
+					pricing_rule.discount_amount
+				)
+
+		item_details.discount_percentage = 0.0
+
+	
 @frappe.whitelist()
 def remove_pricing_rule_for_item(
 	pricing_rules: str | None,
