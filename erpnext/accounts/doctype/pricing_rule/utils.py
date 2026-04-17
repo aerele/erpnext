@@ -23,6 +23,41 @@ class MultiplePricingRuleConflict(frappe.ValidationError):
 apply_on_table = {"Item Code": "items", "Item Group": "item_groups", "Brand": "brands"}
 
 
+# def get_pricing_rules(args, doc=None):
+# 	pricing_rules = []
+# 	values = {}
+
+# 	if not frappe.db.count("Pricing Rule", cache=True):
+# 		return
+
+# 	for apply_on in ["Item Code", "Item Group", "Brand"]:
+# 		pricing_rules.extend(_get_pricing_rules(apply_on, args, values))
+# 		if pricing_rules and pricing_rules[0].has_priority:
+# 			continue
+
+# 		if pricing_rules and not apply_multiple_pricing_rules(pricing_rules):
+# 			break
+
+# 	rules = []
+# 	pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
+
+# 	if not pricing_rules:
+# 		return []
+
+# 	if apply_multiple_pricing_rules(pricing_rules):
+# 		pricing_rules = sorted_by_priority(pricing_rules, args, doc)
+# 		for pricing_rule in pricing_rules:
+# 			if isinstance(pricing_rule, list):
+# 				rules.extend(pricing_rule)
+# 			else:
+# 				rules.append(pricing_rule)
+# 	else:
+# 		pricing_rule = filter_pricing_rules(args, pricing_rules, doc)
+# 		if pricing_rule:
+# 			rules.append(pricing_rule)
+
+# 	return rules
+
 def get_pricing_rules(args, doc=None):
 	pricing_rules = []
 	values = {}
@@ -44,8 +79,26 @@ def get_pricing_rules(args, doc=None):
 	if not pricing_rules:
 		return []
 
-	if apply_multiple_pricing_rules(pricing_rules):
-		pricing_rules = sorted_by_priority(pricing_rules, args, doc)
+	# if both apply multiple pricing rules and not checked one is there , separate it out 
+	has_multiple = any(d.apply_multiple_pricing_rules for d in pricing_rules)
+
+	if has_multiple:
+		# separate multiple and non multiple ones
+		multiple_rules = [p for p in pricing_rules if p.apply_multiple_pricing_rules]
+		skipped_rules = [p for p in pricing_rules if not p.apply_multiple_pricing_rules]
+
+		# notifying the user
+		for skipped in skipped_rules:
+			frappe.msgprint(
+				_("Pricing Rule {0} is being ignored because 'Apply Multiple Pricing Rules' is not checked, "
+				  "while other applicable rules have it checked.").format(
+					frappe.bold(skipped.name)
+				),
+				indicator="orange",
+				alert=True
+			)
+
+		pricing_rules = sorted_by_priority(multiple_rules, args, doc)
 		for pricing_rule in pricing_rules:
 			if isinstance(pricing_rule, list):
 				rules.extend(pricing_rule)
@@ -73,7 +126,7 @@ def sorted_by_priority(pricing_rules, args, doc=None):
 			if pricing_rule.get("apply_multiple_pricing_rules"):
 				pricing_rule_dict.setdefault(cint(pricing_rule.get("priority")), []).append(pricing_rule)
 
-	for key in sorted(pricing_rule_dict):
+	for key in sorted(pricing_rule_dict,reverse = True):
 		pricing_rules_list.extend(pricing_rule_dict.get(key))
 
 	return pricing_rules_list
@@ -512,6 +565,45 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 	child_doctype = f"{doctype} Item"
 	apply_on = frappe.scrub(pr_doc.get("apply_on"))
 
+	# Transaction- in is-cumulative
+	if pr_doc.get("apply_on") == "Transaction":
+		parent_meta = frappe.get_meta(doctype)
+		Parent = frappe.qb.DocType(doctype)
+
+		amount_field = (
+			"base_net_total" if parent_meta.has_field("base_net_total") else "base_grand_total"
+		)
+		qty_field = "total_qty" if parent_meta.has_field("total_qty") else None
+
+		query = (
+			frappe.qb.from_(Parent)
+			.select(Parent[amount_field].as_("amount"))
+			.where(Parent[date_field][pr_doc.valid_from : pr_doc.valid_upto])
+			.where(Parent.docstatus == 1)
+		)
+		if qty_field:
+			query = query.select(Parent[qty_field].as_("stock_qty"))
+
+		for field in ("company", "currency"):
+			if pr_doc.get(field) and parent_meta.has_field(field):
+				query = query.where(Parent[field] == pr_doc.get(field))
+
+		party_field = "customer" if pr_doc.get("selling") else "supplier"
+		if pr_doc.get(party_field) and parent_meta.has_field(party_field):
+			query = query.where(Parent[party_field] == pr_doc.get(party_field))
+
+		if pr_doc.get("modified"):
+			query = query.where(Parent.creation >= pr_doc.get("modified"))
+
+		if doc.get("name"):
+			query = query.where(Parent.name != doc.get("name"))
+
+		for data in query.run(as_dict=True):
+			sum_qty += flt(data.get("stock_qty") or 0)
+			sum_amt += flt(data.get("amount") or 0)
+
+		return [sum_qty, sum_amt]
+
 	values = [pr_doc.valid_from, pr_doc.valid_upto]
 	condition = ""
 
@@ -529,6 +621,10 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 		)
 
 		values.extend(items)
+	
+	if pr_doc.get("modified"):
+		condition += f" and `tab{doctype}`.creation >= %s"
+		values.append(pr_doc.get("modifed"))
 
 	data_set = frappe.db.sql(
 		f""" SELECT `tab{child_doctype}`.stock_qty,
@@ -565,7 +661,25 @@ def apply_pricing_rule_on_transaction(doc):
 	)
 
 	if pricing_rules:
-		pricing_rules = filter_pricing_rules_for_qty_amount(doc.total_qty, doc.total, pricing_rules)
+		base_qty = flt(doc.total_qty)
+		base_amount = flt(doc.total)
+
+		filtered = []
+		for pr in pricing_rules:
+			qty = base_qty
+			amount = base_amount
+
+			if pr.get("is_cumulative"):
+				pr_doc = frappe.get_cached_doc("Pricing Rule", pr.name)
+				data = get_qty_amount_data_for_cumulative(pr_doc, doc)
+				if data:
+					qty += flt(data[0])
+					amount += flt(data[1])
+
+			if filter_pricing_rules_for_qty_amount(qty, amount, [pr]):
+				filtered.append(pr)
+
+		pricing_rules = filtered
 		pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
 
 		if not pricing_rules:
