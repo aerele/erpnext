@@ -709,11 +709,13 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	}
 
 	item_code(doc, cdt, cdn) {
+
 		var me = this;
 		frappe.flags.dialog_set = false;
 
 		// Experimental: This will be removed once stability is achieved.
 		if (!frappe.boot.sysdefaults.use_legacy_js_reactivity) {
+
 			var item = frappe.get_doc(cdt, cdn);
 
 			frappe.call({
@@ -726,6 +728,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 					if (!r.exc) {
 						me.frm.refresh_fields();
 						me.show_batch_dialog_if_required(item);
+						// apply pricing rule on item while selecting itself , because of qty 1 , might have group conditions with some other item .
+
+						me.apply_pricing_rule(null,true);
 					}
 				},
 			});
@@ -963,14 +968,14 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 				"Purchase Receipt Item",
 			]),
 			cdt)
-		)
+		){
 			this.apply_pricing_rule_on_item(item);
+		}
 		else
 			item.rate = flt(
 				item.price_list_rate * (1 - item.discount_percentage / 100.0),
 				precision("rate", item)
 			);
-
 		this.calculate_taxes_and_totals();
 	}
 
@@ -1728,8 +1733,10 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			frappe.run_serially([
 				() => this.remove_pricing_rule_for_item(item),
 				() => this.conversion_factor(doc, cdt, cdn, true),
-				// () => this.apply_price_list(item, true), //reapply price list before applying pricing rule
+				// removed this.apply_price_list because it only checks for the current row whose qty is being modified and causes issues.
+				// () => this.apply_price_list(item, true), 
 				() => this.calculate_stock_uom_rate(doc, cdt, cdn),
+				// changed apply_pricing_rule(item,true) to (null,true) , to reapply pricing rule for all the items incase of mixed condition and group rule.
 				() => this.apply_pricing_rule(null, true),
 			]);
 		} else {
@@ -1791,6 +1798,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	process_item_removal() {
 		this.frm.trigger("calculate_taxes_and_totals");
 		this.frm.trigger("calculate_net_weight");
+		// added code to apply pricing rule when a row is being deleted
 		this.apply_pricing_rule(null, true);
 	}
 
@@ -2161,6 +2169,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 						r.message.forEach((row_item) => {
 							me.remove_pricing_rule(row_item);
 						});
+						// added a flag below to , not to overwrite the item level discount by calling apply_rule_on_other_items
 						me._set_values_for_item_list(r.message,true);
 						me.calculate_taxes_and_totals();
 						if (me.frm.doc.apply_discount_on) me.frm.trigger("apply_discount_on");
@@ -2326,11 +2335,11 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	}
 
 	_set_values_for_item_list(children,from_pricing_rule=false) {
+
 		const items_rule_dict = {};
 
 		for (const child of children) {
 			const existing_pricing_rule = frappe.model.get_value(child.doctype, child.name, "pricing_rules");
-
 			for (const [key, value] of Object.entries(child)) {
 				if (!["doctype", "name"].includes(key)) {
 					if (key === "price_list_rate") {
@@ -2346,6 +2355,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 							child.apply_rule_on_other_items &&
 							JSON.parse(child.apply_rule_on_other_items).length
 						) {
+							// added code to compare item group with item group instead of item code (2 lines)
 							const apply_on = child.apply_rule_on || "item_code";
     						const item_value = frappe.get_doc(child.doctype, child.name)?.[apply_on];
 							if (!JSON.parse(child.apply_rule_on_other_items).includes(item_value)) {
@@ -2353,7 +2363,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 						}
 
 						}
-
+						if (key === "discount_percentage" && child.pricing_rules && child.discount_amount > 0) {
+							continue;
+						}
 						frappe.model.set_value(child.doctype, child.name, key, value);
 					}
 				}
@@ -2367,6 +2379,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			// if pricing rule set as blank from an existing value, apply price_list
 			if (!this.frm.doc.ignore_pricing_rule && existing_pricing_rule && !child.pricing_rules) {
 				this.apply_price_list(frappe.get_doc(child.doctype, child.name));
+
 			} else if (!child.pricing_rules) {
 				this.remove_pricing_rule(frappe.get_doc(child.doctype, child.name));
 			}
@@ -2380,10 +2393,12 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			}
 		}
 
-		// this.apply_rule_on_other_items(items_rule_dict);
+
+		// preventing values from changing once again
 		if (!from_pricing_rule) {
 			this.apply_rule_on_other_items(items_rule_dict);
 		}
+		
 		this.calculate_taxes_and_totals();
 	}
 
@@ -2466,12 +2481,12 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		if (this.frm.doc.doctype === "Material Request") {
 			return;
 		}
-
 		if (!reset_plc_conversion) {
 			this.frm.set_value("plc_conversion_rate", "");
 		}
 
 		let me = this;
+
 		let args = this._get_args(item);
 		if (!((args.items && args.items.length) || args.price_list)) {
 			return;
@@ -2512,6 +2527,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 											"discount_percentage"
 										);
 									});
+									me.apply_pricing_rule(null, true);
 								}
 							},
 							() => {
@@ -2529,6 +2545,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	}
 
 	remove_pricing_rule(item, removed_pricing_rule, row_name) {
+
 		let me = this;
 		const fields = [
 			"discount_percentage",
@@ -2561,12 +2578,18 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			const applied_on_items = item.applied_on_items.split(",");
 			me.frm.doc.items.forEach((row) => {
 				if (applied_on_items.includes(row[item.apply_on])) {
+					const avl_rule = (row.pricing_rules && (row.pricing_rules !== item.pricing_rules));
 					fields.forEach((f) => {
-						row[f] = 0;
+
+						// if the item has any pricing rules , dont revert the discount to 0
+						if(!avl_rule){
+							row[f] = 0;
+						}
+
 					});
 
 					["pricing_rules", "margin_type"].forEach((field) => {
-						if (row[field]) {
+						if (row[field] && !avl_rule) {
 							row[field] = "";
 						}
 					});
@@ -2585,7 +2608,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 	trigger_price_list_rate() {
 		var me = this;
-
 		this.frm.doc.items.forEach((child_row) => {
 			me.frm.script_manager.trigger("price_list_rate", child_row.doctype, child_row.name);
 		});
