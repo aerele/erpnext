@@ -792,6 +792,7 @@ frappe.ui.form.on("Sales Order", {
 });
 
 frappe.ui.form.on("Sales Order Item", {
+
 	item_code: async function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 		if (frm.doc.delivery_date) {
@@ -914,6 +915,10 @@ frappe.ui.form.on("Sales Order Item", {
 			}
 		}
 	},
+	
+	warehouse: function(frm) {
+		frm.cscript.apply_pricing_rule(null, true);
+    },
 });
 
 erpnext.selling.SalesOrderController = class SalesOrderController extends erpnext.selling.SellingController {
