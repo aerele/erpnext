@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.docstatus import DocStatus
+from frappe.utils import flt
 
 
 def execute(filters=None):
@@ -116,14 +117,18 @@ def get_data(filters, group_fieldname=None):
 
 
 def group_by(data, fieldname):
-	groups = {row.get(fieldname) for row in data}
+	groups = {row.get(fieldname) for row in data if row.get(fieldname)}
 	grouped_data = []
 	for group in sorted(groups):
 		group_row = {
 			fieldname: group,
-			"hours": sum(row.get("hours") for row in data if row.get(fieldname) == group),
-			"billing_hours": sum(row.get("billing_hours") for row in data if row.get(fieldname) == group),
-			"billing_amount": sum(row.get("billing_amount") for row in data if row.get(fieldname) == group),
+			"hours": sum(flt(row.get("hours")) for row in data if row.get(fieldname) == group),
+			"billing_hours": sum(
+				flt(row.get("billing_hours")) for row in data if row.get(fieldname) == group
+			),
+			"billing_amount": sum(
+				flt(row.get("billing_amount")) for row in data if row.get(fieldname) == group
+			),
 			"indent": 0,
 			"is_group": 1,
 		}
