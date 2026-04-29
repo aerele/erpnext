@@ -117,31 +117,46 @@ def get_data(filters, group_fieldname=None):
 
 
 def group_by(data, fieldname):
-	groups = {row.get(fieldname) for row in data if row.get(fieldname)}
+	grouped = {}
+
+	for row in data:
+		key = row.get(fieldname)
+
+		if not key:
+			continue
+
+		if key not in grouped:
+			grouped[key] = {
+				"rows": [],
+				"hours": 0,
+				"billing_hours": 0,
+				"billing_amount": 0,
+				"employee_name": row.get("employee_name"),
+			}
+
+		grouped[key]["rows"].append(row)
+		grouped[key]["hours"] += flt(row.get("hours"))
+		grouped[key]["billing_hours"] += flt(row.get("billing_hours"))
+		grouped[key]["billing_amount"] += flt(row.get("billing_amount"))
+
 	grouped_data = []
-	for group in sorted(groups):
+
+	for group in sorted(grouped):
 		group_row = {
 			fieldname: group,
-			"hours": sum(flt(row.get("hours")) for row in data if row.get(fieldname) == group),
-			"billing_hours": sum(
-				flt(row.get("billing_hours")) for row in data if row.get(fieldname) == group
-			),
-			"billing_amount": sum(
-				flt(row.get("billing_amount")) for row in data if row.get(fieldname) == group
-			),
+			"hours": grouped[group]["hours"],
+			"billing_hours": grouped[group]["billing_hours"],
+			"billing_amount": grouped[group]["billing_amount"],
 			"indent": 0,
 			"is_group": 1,
 		}
+
 		if fieldname == "employee":
-			group_row["employee_name"] = next(
-				row.get("employee_name") for row in data if row.get(fieldname) == group
-			)
+			group_row["employee_name"] = grouped[group]["employee_name"]
 
 		grouped_data.append(group_row)
-		for row in data:
-			if row.get(fieldname) != group:
-				continue
 
+		for row in grouped[group]["rows"]:
 			_row = row.copy()
 			_row[fieldname] = None
 			_row["indent"] = 1
