@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.docstatus import DocStatus
+from frappe.utils import flt
 
 
 def execute(filters=None):
@@ -116,31 +117,37 @@ def get_data(filters, group_fieldname=None):
 
 
 def group_by(data, fieldname):
-	groups = {row.get(fieldname) for row in data}
+	data = sorted(data, key=lambda x: x.get(fieldname) or "")
+	group_row = {}
 	grouped_data = []
-	for group in sorted(groups):
-		group_row = {
-			fieldname: group,
-			"hours": sum(row.get("hours") for row in data if row.get(fieldname) == group),
-			"billing_hours": sum(row.get("billing_hours") for row in data if row.get(fieldname) == group),
-			"billing_amount": sum(row.get("billing_amount") for row in data if row.get(fieldname) == group),
-			"indent": 0,
-			"is_group": 1,
-		}
-		if fieldname == "employee":
-			group_row["employee_name"] = next(
-				row.get("employee_name") for row in data if row.get(fieldname) == group
-			)
 
-		grouped_data.append(group_row)
-		for row in data:
-			if row.get(fieldname) != group:
-				continue
+	for row in data:
+		key = row.get(fieldname)
 
-			_row = row.copy()
-			_row[fieldname] = None
-			_row["indent"] = 1
-			_row["is_group"] = 0
-			grouped_data.append(_row)
+		if not key:
+			continue
+
+		if key not in group_row:
+			group_row[key] = {
+				fieldname: key,
+				"hours": 0,
+				"billing_hours": 0,
+				"billing_amount": 0,
+				"indent": 0,
+			}
+
+			if fieldname == "employee":
+				group_row[key]["employee_name"] = row.get("employee_name")
+
+			grouped_data.append(group_row[key])
+
+		group_row[key]["hours"] += flt(row.get("hours"))
+		group_row[key]["billing_hours"] += flt(row.get("billing_hours"))
+		group_row[key]["billing_amount"] += flt(row.get("billing_amount"))
+
+		_row = row.copy()
+		_row[fieldname] = None
+		_row["indent"] = 1
+		grouped_data.append(_row)
 
 	return grouped_data
