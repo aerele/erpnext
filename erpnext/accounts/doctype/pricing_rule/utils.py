@@ -22,41 +22,63 @@ class MultiplePricingRuleConflict(frappe.ValidationError):
 
 apply_on_table = {"Item Code": "items", "Item Group": "item_groups", "Brand": "brands"}
 
+def get_coupon_pricing_rule(doc):
+	"""
+	Returns the Pricing Rule name linked to the coupon on the doc.
+	Returns None if no coupon is entered or the coupon has no linked rule.
+	"""
+	if not doc:
+		return None
 
-# def get_pricing_rules(args, doc=None):
-# 	pricing_rules = []
-# 	values = {}
+	# doc could be a Document object or a dict — handle both
+	coupon_code = doc.get("coupon_code") if hasattr(doc, "get") else None
+	if not coupon_code:
+		return None
 
-# 	if not frappe.db.count("Pricing Rule", cache=True):
-# 		return
+	return frappe.db.get_value("Coupon Code", coupon_code, "pricing_rule")
 
-# 	for apply_on in ["Item Code", "Item Group", "Brand"]:
-# 		pricing_rules.extend(_get_pricing_rules(apply_on, args, values))
-# 		if pricing_rules and pricing_rules[0].has_priority:
-# 			continue
+def coupon_rule_has_matching_items(coupon_rule_name, doc):
+	"""
+	Returns True if the coupon's pricing rule actually applies to items in the doc.
 
-# 		if pricing_rules and not apply_multiple_pricing_rules(pricing_rules):
-# 			break
+	- Transaction-level rules always return True (no item filter).
+	- Item/Group/Brand rules return True only if at least one matching item is in doc.items.
+	- Returns False if the rule has no targets, or none of them match.
+	"""
+	if not coupon_rule_name or not doc:
+		return False
 
-# 	rules = []
-# 	pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
+	pr = frappe.get_cached_doc("Pricing Rule", coupon_rule_name)
 
-# 	if not pricing_rules:
-# 		return []
+	if pr.apply_on == "Transaction":
+		return True
 
-# 	if apply_multiple_pricing_rules(pricing_rules):
-# 		pricing_rules = sorted_by_priority(pricing_rules, args, doc)
-# 		for pricing_rule in pricing_rules:
-# 			if isinstance(pricing_rule, list):
-# 				rules.extend(pricing_rule)
-# 			else:
-# 				rules.append(pricing_rule)
-# 	else:
-# 		pricing_rule = filter_pricing_rules(args, pricing_rules, doc)
-# 		if pricing_rule:
-# 			rules.append(pricing_rule)
+	rule_items = set()
+	rule_item_groups = set()
+	rule_brands = set()
 
-# 	return rules
+	if pr.apply_on == "Item Code":
+		rule_items = {row.item_code for row in pr.items if row.item_code}
+	elif pr.apply_on == "Item Group":
+		rule_item_groups = {row.item_group for row in pr.item_groups if row.item_group}
+	elif pr.apply_on == "Brand":
+		rule_brands = {row.brand for row in pr.brands if row.brand}
+
+	if not (rule_items or rule_item_groups or rule_brands):
+		return False
+
+	for item in doc.get("items") or []:
+		if item.get("is_free_item"):
+			continue
+		if item.item_code and item.item_code in rule_items:
+			return True
+		if item.item_group and item.item_group in rule_item_groups:
+			return True
+		if item.brand and item.brand in rule_brands:
+			return True
+
+	return False
+
 
 def get_pricing_rules(args, doc=None):
 	pricing_rules = []
@@ -326,6 +348,29 @@ def filter_pricing_rules(args, pricing_rules, doc=None):
 		pricing_rules = [pricing_rules]
 
 	original_pricing_rule = copy.copy(pricing_rules)
+
+	if doc:
+		coupon_rule_name = get_coupon_pricing_rule(doc)
+		if coupon_rule_name and coupon_rule_has_matching_items(coupon_rule_name, doc):
+			coupon_matched = [p for p in pricing_rules if p.name == coupon_rule_name]
+			skipped_names = {p.name for p in pricing_rules if p.name != coupon_rule_name}
+
+			for skipped_name in skipped_names:
+				frappe.msgprint(
+					_("Pricing Rule {0} is being ignored on item {1} because coupon {2} is applied.").format(
+						frappe.bold(skipped_name),
+						frappe.bold(args.get("item_code") or ""),
+						frappe.bold(doc.get("coupon_code")),
+					),
+					indicator="orange",
+					alert=True,
+				)
+
+			pricing_rules = coupon_matched
+			# If the coupon's rule isn't a candidate for this item,
+			# this item gets no rule at all.
+			if not pricing_rules:
+				return None
 
 	# filter for qty
 	if pricing_rules:
@@ -624,7 +669,7 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 	
 	if pr_doc.get("modified"):
 		condition += f" and `tab{doctype}`.creation >= %s"
-		values.append(pr_doc.get("modifed"))
+		values.append(pr_doc.get("modified"))
 
 	data_set = frappe.db.sql(
 		f""" SELECT `tab{child_doctype}`.stock_qty,
@@ -647,97 +692,203 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 
 
 def apply_pricing_rule_on_transaction(doc):
-	conditions = "apply_on = 'Transaction'"
+    conditions = "apply_on = 'Transaction'"
+    values = {}
+    conditions = get_other_conditions(conditions, values, doc)
 
-	values = {}
-	conditions = get_other_conditions(conditions, values, doc)
+    pricing_rules = frappe.db.sql(
+        f""" Select `tabPricing Rule`.* from `tabPricing Rule`
+        where  {conditions} and `tabPricing Rule`.disable = 0
+    """, values, as_dict=1)
 
-	pricing_rules = frappe.db.sql(
-		f""" Select `tabPricing Rule`.* from `tabPricing Rule`
-		where  {conditions} and `tabPricing Rule`.disable = 0
-	""",
-		values,
-		as_dict=1,
-	)
+    if not pricing_rules:
+        return
 
-	if pricing_rules:
-		base_qty = flt(doc.total_qty)
-		base_amount = flt(doc.total)
+    coupon_rule_name = get_coupon_pricing_rule(doc)
 
-		filtered = []
-		for pr in pricing_rules:
-			qty = base_qty
-			amount = base_amount
+    if coupon_rule_name and coupon_rule_has_matching_items(coupon_rule_name, doc):
+        # Coupon entered AND its rule applies to items in this doc:
+        # only the coupon's rule applies, all others are skipped.
+        coupon_matched = [p for p in pricing_rules if p.name == coupon_rule_name]
+        skipped = [p for p in pricing_rules if p.name != coupon_rule_name]
 
-			if pr.get("is_cumulative"):
-				pr_doc = frappe.get_cached_doc("Pricing Rule", pr.name)
-				data = get_qty_amount_data_for_cumulative(pr_doc, doc)
-				if data:
-					qty += flt(data[0])
-					amount += flt(data[1])
+        for s in skipped:
+            frappe.msgprint(
+                _("Pricing Rule {0} is being ignored because coupon {1} is applied. "
+                  "Only the coupon's pricing rule will be used.").format(
+                    frappe.bold(s.name),
+                    frappe.bold(doc.get("coupon_code")),
+                ),
+                indicator="orange",
+                alert=True,
+            )
 
-			if filter_pricing_rules_for_qty_amount(qty, amount, [pr]):
-				filtered.append(pr)
+        pricing_rules = coupon_matched
 
-		pricing_rules = filtered
-		pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
+        if not pricing_rules:
+            doc.set("additional_discount_percentage", 0)
+            doc.set("discount_amount", 0)
+            return
 
-		if not pricing_rules:
-			remove_free_item(doc)
+    elif coupon_rule_name:
+        # Coupon entered but its rule doesn't match anything in this doc.
+        frappe.msgprint(
+            _("Coupon {0} does not apply to any items in this transaction. "
+              "Normal pricing rules will be applied instead.").format(
+                frappe.bold(doc.get("coupon_code")),
+            ),
+            indicator="yellow",
+            alert=True,
+        )
+        pricing_rules = [p for p in pricing_rules if not p.get("coupon_code_based")]
+        if not pricing_rules:
+            return
 
-		for d in pricing_rules:
-			if d.price_or_product_discount == "Price":
-				if d.apply_discount_on:
-					doc.set("apply_discount_on", d.apply_discount_on)
-				# Variable to track whether the condition has been met
-				condition_met = False
+    else:
+        # No coupon entered: drop all coupon-based rules so they don't compete.
+        pricing_rules = [p for p in pricing_rules if not p.get("coupon_code_based")]
+        if not pricing_rules:
+            return
 
-				for field in ["additional_discount_percentage", "discount_amount"]:
-					pr_field = "discount_percentage" if field == "additional_discount_percentage" else field
+    base_qty = flt(doc.total_qty)
+    base_amount = flt(doc.total)
 
-					if not d.get(pr_field):
-						continue
+    filtered = []
+    for pr in pricing_rules:
+        qty = base_qty
+        amount = base_amount
+        if pr.get("is_cumulative"):
+            pr_doc = frappe.get_cached_doc("Pricing Rule", pr.name)
+            data = get_qty_amount_data_for_cumulative(pr_doc, doc)
+            if data:
+                qty += flt(data[0])
+                amount += flt(data[1])
+        if filter_pricing_rules_for_qty_amount(qty, amount, [pr]):
+            filtered.append(pr)
 
-					if (
-						d.validate_applied_rule
-						and doc.get(field) is not None
-						and doc.get(field) < d.get(pr_field)
-					):
-						frappe.msgprint(_("User has not applied rule on the invoice {0}").format(doc.name))
-					else:
-						if not d.coupon_code_based:
-							doc.set(field, d.get(pr_field))
-						elif doc.get("coupon_code"):
-							# coupon code based pricing rule
-							coupon_code_pricing_rule = frappe.db.get_value(
-								"Coupon Code", doc.get("coupon_code"), "pricing_rule"
-							)
-							if coupon_code_pricing_rule == d.name:
-								# if selected coupon code is linked with pricing rule
-								doc.set(field, d.get(pr_field))
+    pricing_rules = filtered
+    pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
 
-								# Set the condition_met variable to True and break out of the loop
-								condition_met = True
-								break
+    if pricing_rules:
+        has_multiple = any(d.get("apply_multiple_pricing_rules") for d in pricing_rules)
+        if has_multiple:
+            multiple_rules = [p for p in pricing_rules if p.get("apply_multiple_pricing_rules")]
+            skipped_rules = [p for p in pricing_rules if not p.get("apply_multiple_pricing_rules")]
+            for skipped in skipped_rules:
+                frappe.msgprint(
+                    _("Pricing Rule {0} is being ignored because 'Apply Multiple Pricing Rules' is not checked, "
+                      "while other applicable rules have it checked.").format(frappe.bold(skipped.name)),
+                    indicator="orange", alert=True
+                )
+            pricing_rules = sorted(multiple_rules, key=lambda x: cint(x.get("priority") or 0), reverse=True)
+        else:
+            pricing_rules = [max(pricing_rules, key=lambda x: cint(x.get("priority") or 0))]
 
-							else:
-								# reset discount if not linked
-								doc.set(field, 0)
-						else:
-							# if coupon code based but no coupon code selected
-							doc.set(field, 0)
+    if not pricing_rules:
+        remove_free_item(doc)
+        return
 
-				doc.calculate_taxes_and_totals()
+    if doc.get("pricing_rules"):
+        doc.set(
+            "pricing_rules",
+            [r for r in doc.get("pricing_rules") if r.get("child_docname")]
+        )
 
-				# Break out of the main loop if the condition is met
-				if condition_met:
-					break
-			elif d.price_or_product_discount == "Product":
-				item_details = frappe._dict({"parenttype": doc.doctype, "free_item_data": []})
-				get_product_discount_rule(d, item_details, doc=doc)
-				apply_pricing_rule_for_free_items(doc, item_details.free_item_data)
-				doc.set_missing_values()
-				doc.calculate_taxes_and_totals()
+    accumulated_discount_amount = 0.0
+    base_total = flt(doc.total)
+    applied_transaction_rules = []
+    coupon_short_circuited = False
+
+    for d in pricing_rules:
+        if d.price_or_product_discount == "Price":
+            if d.apply_discount_on:
+                doc.set("apply_discount_on", d.apply_discount_on)
+
+            rule_value = flt(d.discount_percentage) or flt(d.discount_amount)
+            if d.validate_applied_rule and rule_value:
+                current_doc_value = flt(doc.get("additional_discount_percentage")) or flt(doc.get("discount_amount"))
+                if current_doc_value is not None and current_doc_value < rule_value:
+                    frappe.msgprint(_("User has not applied rule on the invoice {0}").format(doc.name))
+                    continue
+
+            if d.coupon_code_based:
+                if doc.get("coupon_code"):
+                    coupon_code_pricing_rule = frappe.db.get_value(
+                        "Coupon Code", doc.get("coupon_code"), "pricing_rule"
+                    )
+                    if coupon_code_pricing_rule == d.name:
+                        if d.discount_percentage:
+                            accumulated_discount_amount = base_total * flt(d.discount_percentage) / 100.0
+                        else:
+                            accumulated_discount_amount = flt(d.discount_amount)
+                        applied_transaction_rules = [d.name]   
+                        coupon_short_circuited = True
+                        break
+                continue
+
+            if d.apply_discount_on_rate:
+                current_effective = base_total - accumulated_discount_amount
+                if d.discount_percentage:
+                    new_effective = current_effective * (1.0 - flt(d.discount_percentage) / 100.0)
+                else:
+                    new_effective = current_effective - flt(d.discount_amount)
+                accumulated_discount_amount = base_total - new_effective
+            else:
+                if d.discount_percentage:
+                    accumulated_discount_amount += base_total * flt(d.discount_percentage) / 100.0
+                else:
+                    accumulated_discount_amount += flt(d.discount_amount)
+
+            applied_transaction_rules.append(d.name)
+
+        elif d.price_or_product_discount == "Product":
+            item_details = frappe._dict({"parenttype": doc.doctype, "free_item_data": []})
+            get_product_discount_rule(d, item_details, doc=doc)
+            apply_pricing_rule_for_free_items(doc, item_details.free_item_data)
+            doc.set_missing_values()
+            applied_transaction_rules.append(d.name)
+
+    if accumulated_discount_amount:
+        doc.set("additional_discount_percentage", 0)
+        doc.set("discount_amount", flt(accumulated_discount_amount))
+
+    for rule_name in applied_transaction_rules:
+        doc.append("pricing_rules", {
+            "pricing_rule": rule_name,
+            "rule_applied": 1,
+        })
+
+
+    doc.calculate_taxes_and_totals()
+
+
+def validate_coupon_applicability(doc,method = None):
+    if not doc.get("coupon_code"):
+        return
+
+    coupon_rule_name = get_coupon_pricing_rule(doc)
+
+    if not coupon_rule_name:
+        frappe.msgprint(
+            _("Coupon {0} has no linked pricing rule. It has been removed from the document.").format(
+                frappe.bold(doc.get("coupon_code")),
+            ),
+            indicator="orange",
+            alert=True,
+        )
+        doc.coupon_code = ""
+        return
+
+    if not coupon_rule_has_matching_items(coupon_rule_name, doc):
+        frappe.msgprint(
+            _("Coupon {0} does not apply to any items in this transaction. "
+              "It has been removed and normal pricing rules will be used.").format(
+                frappe.bold(doc.get("coupon_code")),
+            ),
+            indicator="orange",
+            alert=True,
+        )
+        doc.coupon_code = ""
 
 
 def remove_free_item(doc):
@@ -757,34 +908,46 @@ def get_applied_pricing_rules(pricing_rules):
 
 
 def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
+
+
 	free_item = pricing_rule.free_item
 	if pricing_rule.same_item and pricing_rule.get("apply_on") != "Transaction":
 		free_item = item_details.item_code or args.item_code
 
-	if not free_item:
-		frappe.throw(
-			_("Free item not set in the pricing rule {0}").format(
-				get_link_to_form("Pricing Rule", pricing_rule.name)
-			)
-		)
-
 	qty = pricing_rule.free_qty or 1
+
 	if pricing_rule.is_recursive:
-		transaction_qty = sum(
-			[
-				row.qty
+		qty = 0
+
+		transaction_qty = 0
+
+		for row in doc.items:
+			if row.is_free_item:
+				continue
+			if pricing_rule.name in (row.pricing_rules or ""):
+				transaction_qty += row.qty
+
+		if args and args.get("item_code") and not args.get("is_free_item"):
+			# Match row.name against args.child_docname (the row identifier)
+			# or args.name (older callers that pass the row name as 'name').
+			row_id = args.get("child_docname") or args.get("name")
+			already_counted = any(
+				not row.is_free_item
+				and pricing_rule.name in (row.pricing_rules or "")
+				and row.get("name") == row_id
 				for row in doc.items
-				if not row.is_free_item
-				and row.item_code == args.item_code
-				and row.pricing_rules == args.pricing_rules
-			]
-		)
+			)
+			if not already_counted:
+				transaction_qty += flt(args.get("qty") or 0)
+		
+
 		transaction_qty = transaction_qty - pricing_rule.apply_recursion_over
 		if transaction_qty and transaction_qty > 0:
 			qty = flt(transaction_qty) * qty / pricing_rule.recurse_for
+
 			if pricing_rule.round_free_qty:
 				qty = (flt(transaction_qty) // pricing_rule.recurse_for) * (pricing_rule.free_qty or 1)
-
+			
 	if not qty:
 		return
 
@@ -815,7 +978,6 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 
 	item_details.free_item_data.append(free_item_data_args)
 
-
 def apply_pricing_rule_for_free_items(doc, pricing_rule_args):
 	if pricing_rule_args:
 		args = {(d["item_code"], d["pricing_rules"]): d for d in pricing_rule_args}
@@ -826,13 +988,36 @@ def apply_pricing_rule_for_free_items(doc, pricing_rule_args):
 
 			free_item_data = args.get((item.item_code, item.pricing_rules))
 			if free_item_data:
-				free_item_data.pop("item_name")
-				free_item_data.pop("description")
-				item.update(free_item_data)
+				dont_enforce = frappe.db.get_value(
+					"Pricing Rule", free_item_data["pricing_rules"], "dont_enforce_free_item_qty"
+				)
+
+				if not dont_enforce:
+					# Rule enforces qty/rate — overwrite whatever the user typed
+					free_item_data.pop("item_name", None)
+					free_item_data.pop("description", None)
+					item.update(free_item_data)
+
+				else:
+					rule_qty = flt(free_item_data.get("qty"))
+					if flt(item.qty) > rule_qty:
+						frappe.msgprint(
+							_("Free item {0} qty capped at {1} (max allowed by Pricing Rule {2}).").format(
+								frappe.bold(item.item_code), frappe.bold(rule_qty), frappe.bold(free_item_data["pricing_rules"]),
+							),
+							indicator="orange", alert=True,
+						)
+						item.qty = rule_qty
+					# rate is always rule-controlled
+					item.rate = flt(free_item_data.get("rate"))
+					item.price_list_rate = flt(free_item_data.get("price_list_rate"))
+
+				# else: user is allowed to edit — keep qty/rate as-is, just acknowledge the row
+
 				args.pop((item.item_code, item.pricing_rules))
 
 		for free_item in args.values():
-			if doc.is_new() or not frappe.get_value(
+			if doc.is_new() or not frappe.db.get_value(
 				"Pricing Rule", free_item["pricing_rules"], "dont_enforce_free_item_qty"
 			):
 				doc.append("items", free_item)
