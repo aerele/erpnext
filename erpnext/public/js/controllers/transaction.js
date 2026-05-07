@@ -1728,6 +1728,11 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 	qty(doc, cdt, cdn) {
 		let item = frappe.get_doc(cdt, cdn);
+
+		if(item.is_free_item){
+			this.calculate_taxes_and_totals();
+			return;
+		}
 		if (!this.is_a_mapped_document(item)) {
 			// item.pricing_rules = ''
 			frappe.run_serially([
@@ -1799,6 +1804,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		this.frm.trigger("calculate_taxes_and_totals");
 		this.frm.trigger("calculate_net_weight");
 		// added code to apply pricing rule when a row is being deleted
+		if (removed_row && removed_row.is_free_item) {
+			return;
+		}
 		this.apply_pricing_rule(null, true);
 	}
 
@@ -2184,6 +2192,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	remove_pricing_rule_for_item(item) {
 		// capture pricing rule before removing it to delete free items
 		let removed_pricing_rule = item.pricing_rules;
+
 		if (item.pricing_rules) {
 			let me = this;
 			return this.frm.call({
@@ -2337,7 +2346,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	_set_values_for_item_list(children,from_pricing_rule=false) {
 
 		const items_rule_dict = {};
-
 		for (const child of children) {
 			const existing_pricing_rule = frappe.model.get_value(child.doctype, child.name, "pricing_rules");
 			for (const [key, value] of Object.entries(child)) {
