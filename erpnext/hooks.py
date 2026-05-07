@@ -409,6 +409,9 @@ doc_events = {
 	"Integration Request": {
 		"validate": "erpnext.accounts.doctype.payment_request.payment_request.validate_payment"
 	},
+    ("Sales Order", "Sales Invoice", "Quotation", "POS Invoice"): {
+        "validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
+    },
 }
 
 # function should expect the variable and doc as arguments
