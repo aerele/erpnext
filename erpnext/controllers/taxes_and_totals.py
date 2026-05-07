@@ -1088,6 +1088,12 @@ class calculate_taxes_and_totals:
 	def calculate_margin(self, item):
 		rate_with_margin = 0.0
 		base_rate_with_margin = 0.0
+
+		if item.get("is_free_item"):
+			item.margin_type = None
+			item.margin_rate_or_amount = 0.0
+			return rate_with_margin, base_rate_with_margin
+		
 		if item.price_list_rate:
 			if item.pricing_rules and not self.doc.ignore_pricing_rule:
 				has_margin = False
