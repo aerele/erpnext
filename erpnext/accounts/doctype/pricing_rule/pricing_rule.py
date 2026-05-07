@@ -32,7 +32,6 @@ class PricingRule(Document):
 		applicable_for: DF.Literal["", "Customer", "Customer Group", "Territory", "Sales Partner", "Campaign", "Supplier", "Supplier Group"]
 		apply_discount_on: DF.Literal["Grand Total", "Net Total"]
 		apply_discount_on_rate: DF.Check
-		apply_margin_on_marginalized_rate: DF.Check
 		apply_multiple_pricing_rules: DF.Check
 		apply_on: DF.Literal["Item Code", "Item Group", "Brand", "Transaction"]
 		apply_recursion_over: DF.Float
@@ -421,11 +420,11 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 
 	if isinstance(doc, str):
 		doc = json.loads(doc)
-
 	if doc:
 		doc = frappe.get_doc(doc)
 
 	if args.get("is_free_item") or args.get("parenttype") == "Material Request":
+
 		return {}
 
 	item_details = frappe._dict(
@@ -452,9 +451,31 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 
 	update_args_for_pricing_rule(args)
 
+	doc_has_coupon = bool(doc and doc.get("coupon_code"))
+
+	stored_rule_names = (
+		get_applied_pricing_rules(args.get("pricing_rules"))
+		if args.get("pricing_rules")
+		else []
+	)
+
+	any_stored_is_coupon_based = any(
+    frappe.db.get_value("Pricing Rule", r, "coupon_code_based")
+    for r in stored_rule_names
+    if r and frappe.db.exists("Pricing Rule", r)
+	)
+
+	use_stored_rules = (
+    for_validate
+    and args.get("pricing_rules")
+    and not doc_has_coupon
+    and not any_stored_is_coupon_based
+	)
+
+
 	pricing_rules = (
 		get_applied_pricing_rules(args.get("pricing_rules"))
-		if for_validate and args.get("pricing_rules")
+		if use_stored_rules
 		else get_pricing_rules(args, doc)
 	)
 
@@ -489,6 +510,7 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 
 			rules.append(get_pricing_rule_details(args, pricing_rule))
 
+
 			if pricing_rule.mixed_conditions or pricing_rule.apply_rule_on_other:
 				item_details.update(
 					{
@@ -501,12 +523,16 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 					}
 				)
 
+
+
 				if pricing_rule.apply_rule_on_other_items:
 					item_details["apply_rule_on_other_items"] = json.dumps(
 						pricing_rule.apply_rule_on_other_items
 					)
 
 			if not pricing_rule.validate_applied_rule:
+				apply_margin_rule(pricing_rule, item_details, args)
+
 				if pricing_rule.price_or_product_discount == "Price":
 					apply_price_discount_rule(pricing_rule, item_details, args)
 				else:
@@ -530,6 +556,7 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 			item_code=args.get("item_code"),
 			rate=args.get("price_list_rate"),
 		)
+
 
 	return item_details
 
@@ -574,71 +601,48 @@ def get_pricing_rule_details(args, pricing_rule):
 	)
 
 
+def apply_margin_rule(pricing_rule, item_details, args):
+	"""Apply margin from a pricing rule. Independent of Price/Product discount mode."""
+	
+	if not (
+		(pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency)
+		or pricing_rule.margin_type == "Percentage"
+	):
+		return
+
+	item_details.margin_type = pricing_rule.margin_type
+	item_details.has_margin = True
+
+	price_list_rate = flt(args.get("price_list_rate", 0))
+	accumulated_margin = flt(item_details.get("margin_rate_or_amount", 0))
+
+	if pricing_rule.apply_margin_on_marginalized_rate and price_list_rate:
+		# sequential compounding — apply on already marginalized rate
+		current_rate_with_margin = price_list_rate + accumulated_margin
+
+		if pricing_rule.margin_type == "Percentage":
+			new_margin = current_rate_with_margin * (pricing_rule.margin_rate_or_amount / 100.0)
+		else:
+			new_margin = pricing_rule.margin_rate_or_amount
+
+		item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
+	else:
+		# flat additive
+		if pricing_rule.margin_type == "Percentage" and price_list_rate:
+			new_margin = price_list_rate * (pricing_rule.margin_rate_or_amount / 100.0)
+			item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
+		else:
+			if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
+				item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
+			else:
+				item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
+
+	# always set margin_type to Amount since converted percentages to amounts
+	item_details.margin_type = "Amount"
+	
 def apply_price_discount_rule(pricing_rule, item_details, args):
 	
 	item_details.pricing_rule_for = pricing_rule.rate_or_discount
-
-	# if (pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency) or (
-	# 	pricing_rule.margin_type == "Percentage"
-	# ):
-	# 	item_details.margin_type = pricing_rule.margin_type
-	# 	item_details.has_margin = True
-
-	# 	if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
-	# 		item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
-	# 	else:
-	# 		item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
-
-	# if pricing_rule.rate_or_discount == "Rate":
-	# 	pricing_rule_rate = 0.0
-	# 	if pricing_rule.currency == args.currency:
-	# 		pricing_rule_rate = pricing_rule.rate
-
-	# 	# TODO https://github.com/frappe/erpnext/pull/23636 solve this in some other way.
-	# 	if pricing_rule_rate:
-	# 		is_blank_uom = pricing_rule.get("uom") != args.get("uom")
-	# 		# Override already set price list rate (from item price)
-	# 		# if pricing_rule_rate > 0
-	# 		item_details.update(
-	# 			{
-	# 				"price_list_rate": pricing_rule_rate
-	# 				* (args.get("conversion_factor", 1) if is_blank_uom else 1),
-	# 			}
-	# 		)
-	# 	item_details.update({"discount_percentage": 0.0})
-
-	if (pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency) or (
-		pricing_rule.margin_type == "Percentage"
-	):
-		item_details.margin_type = pricing_rule.margin_type
-		item_details.has_margin = True
-
-		price_list_rate = flt(args.get("price_list_rate", 0))
-		accumulated_margin = flt(item_details.get("margin_rate_or_amount", 0))
-
-		if pricing_rule.apply_margin_on_marginalized_rate and price_list_rate:
-			# sequential compounding — apply on already marginalized rate
-			current_rate_with_margin = price_list_rate + accumulated_margin
-			
-			if pricing_rule.margin_type == "Percentage":
-				new_margin = current_rate_with_margin * (pricing_rule.margin_rate_or_amount / 100.0)
-			else:
-				new_margin = pricing_rule.margin_rate_or_amount
-
-			item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
-		else:
-			# flat additive
-			if pricing_rule.margin_type == "Percentage" and price_list_rate:
-				new_margin = price_list_rate * (pricing_rule.margin_rate_or_amount / 100.0)
-				item_details.margin_rate_or_amount = accumulated_margin + flt(new_margin)
-			else:
-				if pricing_rule.apply_multiple_pricing_rules and item_details.margin_rate_or_amount is not None:
-					item_details.margin_rate_or_amount += pricing_rule.margin_rate_or_amount
-				else:
-					item_details.margin_rate_or_amount = pricing_rule.margin_rate_or_amount
-
-		# always set margin_type to Amount since , converted percentages to amounts
-		item_details.margin_type = "Amount"
 
 	if pricing_rule.rate_or_discount == "Rate":
 		pricing_rule_rate = 0.0
@@ -717,6 +721,10 @@ def remove_pricing_rule_for_item(
 			continue
 		pricing_rule = frappe.get_cached_doc("Pricing Rule", d)
 
+		if pricing_rule.margin_type in ["Percentage", "Amount"]:
+			item_details.margin_rate_or_amount = 0.0
+			item_details.margin_type = None
+
 		if pricing_rule.price_or_product_discount == "Price":
 			if pricing_rule.rate_or_discount == "Discount Percentage":
 				item_details.discount_percentage = 0.0
@@ -726,9 +734,6 @@ def remove_pricing_rule_for_item(
 			if pricing_rule.rate_or_discount == "Discount Amount":
 				item_details.discount_amount = 0.0
 
-			if pricing_rule.margin_type in ["Percentage", "Amount"]:
-				item_details.margin_rate_or_amount = 0.0
-				item_details.margin_type = None
 		elif pricing_rule.get("free_item") and not pricing_rule.get("dont_enforce_free_item_qty"):
 			item_details.remove_free_item = (
 				item_code if pricing_rule.get("same_item") else pricing_rule.get("free_item")
