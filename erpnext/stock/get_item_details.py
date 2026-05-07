@@ -97,6 +97,10 @@ def get_item_details(
 		if doc.get("doctype") == "Purchase Invoice":
 			ctx.bill_date = doc.get("bill_date")
 
+		if doc.get("coupon_code"):
+			ctx.coupon_code = doc.get("coupon_code")
+		
+
 	out: ItemDetails = get_basic_details(ctx, item, overwrite_warehouse)
 
 	get_item_tax_template(ctx, item, out)
