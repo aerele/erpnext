@@ -456,7 +456,7 @@ def validate_quantity_and_amount_for_suggestion(args, qty, amount, item_code, tr
 		if (
 			args.get(field)
 			and value < args.get(field)
-			and (args.get(field) - cint(args.get(field) * args.threshold_percentage * 0.01)) <= value
+			and value >= (args.get(field) * flt(args.threshold_percentage) * 0.01)
 		):
 			fieldname = field
 
