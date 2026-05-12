@@ -916,9 +916,6 @@ frappe.ui.form.on("Sales Order Item", {
 		}
 	},
 	
-	warehouse: function(frm) {
-		frm.cscript.apply_pricing_rule(null, true);
-    },
 });
 
 erpnext.selling.SalesOrderController = class SalesOrderController extends erpnext.selling.SellingController {
