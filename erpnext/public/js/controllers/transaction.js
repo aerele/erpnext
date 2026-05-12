@@ -165,6 +165,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 				erpnext.accounts.dimensions.copy_dimension_from_first_row(frm, cdt, cdn, "items");
 			},
+			warehouse: () => {
+				this.apply_pricing_rule(null, true);
+			},
 		});
 
 		if (this.frm.fields_dict["items"].grid.get_field("serial_and_batch_bundle")) {
@@ -294,6 +297,8 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			frappe.model.set_value(cdt, cdn, "rejected_serial_no", "");
 		}
 	}
+
+
 
 	set_fields_onload_for_line_item() {
 		if (this.frm.is_new() && this.frm.doc?.items) {
@@ -1063,6 +1068,10 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		this.refresh_serial_batch_bundle_field();
 	}
 
+	before_submit() {
+		this.apply_pricing_rule(null, true);
+	}
+
 	refresh_serial_batch_bundle_field() {
 		frappe.route_hooks.after_submit = (frm_obj) => {
 			frm_obj.reload_doc();
@@ -1312,6 +1321,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	transaction_date() {
 		if (this.frm.doc.transaction_date) {
 			this.frm.transaction_date = this.frm.doc.transaction_date;
+			this.apply_pricing_rule(null, true);
 			frappe.ui.form.trigger(this.frm.doc.doctype, "currency");
 			this.recalculate_terms();
 		}
@@ -1321,6 +1331,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		var me = this;
 		if (this.frm.doc.posting_date) {
 			this.frm.posting_date = this.frm.doc.posting_date;
+			this.apply_pricing_rule(null, true);
 
 			if (
 				(this.frm.doc.doctype == "Sales Invoice" && this.frm.doc.customer) ||
@@ -1484,6 +1495,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			}
 		}
 	}
+
 
 	conversion_rate() {
 		const me = this.frm;
