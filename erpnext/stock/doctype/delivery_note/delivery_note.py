@@ -1186,6 +1186,28 @@ def make_sales_return(source_name: str, target_doc: str | Document | None = None
 
 
 @frappe.whitelist()
+def get_return_invoices(delivery_note: str):
+	if not delivery_note:
+		return []
+
+	SalesInvoice = DocType("Sales Invoice")
+	SalesInvoiceItem = DocType("Sales Invoice Item")
+
+	result = (
+		frappe.qb.from_(SalesInvoice)
+		.inner_join(SalesInvoiceItem)
+		.on(SalesInvoiceItem.parent == SalesInvoice.name)
+		.select(SalesInvoice.name)
+		.where(SalesInvoice.is_return == 1)
+		.where(SalesInvoice.docstatus == 1)
+		.where(SalesInvoiceItem.delivery_note == delivery_note)
+		.limit(1)
+	).run()
+
+	return result
+
+
+@frappe.whitelist()
 def update_delivery_note_status(docname: str, status: str):
 	dn = frappe.get_lazy_doc("Delivery Note", docname)
 	dn.update_status(status)

@@ -123,7 +123,26 @@ frappe.ui.form.on("Delivery Note", {
 			}
 		}
 	},
+	onload(frm) {
+		get_credit_note_invoice(frm);
+	},
 });
+
+function get_credit_note_invoice(frm) {
+	if (!frm.doc.return_against) return;
+
+	frappe.call({
+		method: "erpnext.stock.doctype.delivery_note.delivery_note.get_return_invoices",
+		args: {
+			delivery_note: frm.doc.return_against,
+		},
+		callback: function (r) {
+			if (r.message.length) {
+				frm.set_df_property("issue_credit_note", "hidden", true);
+			}
+		},
+	});
+}
 
 frappe.ui.form.on("Delivery Note Item", {
 	expense_account: function (frm, dt, dn) {
