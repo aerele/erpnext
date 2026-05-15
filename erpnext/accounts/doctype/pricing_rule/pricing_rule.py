@@ -108,10 +108,47 @@ class PricingRule(Document):
 		self.validate_condition()
 		self.validate_mixed_with_recursion()
 		self.validate_priority_conflict()
+		self.validate_draft_transactions_before_disable()
 
 		if not self.margin_type:
 			self.margin_rate_or_amount = 0.0
 
+	def validate_draft_transactions_before_disable(self):
+		if not (self.has_value_changed("disable") and self.disable):
+			return
+
+		doctypes = [
+			("Sales Order", "Sales Order Item"),
+			("Quotation", "Quotation Item"),
+			("Purchase Order", "Purchase Order Item"),
+			("Sales Invoice", "Sales Invoice Item"),
+			("Purchase Invoice", "Purchase Invoice Item"),
+		]
+
+		draft_docs = []
+
+		for parent_dt, child_dt in doctypes:
+			records = frappe.get_all(
+				child_dt,
+				filters={
+					"docstatus": 0,
+					"pricing_rules": ["like", f"%{self.name}%"],
+				},
+				fields=["parent"],
+				distinct=True,
+			)
+
+			for row in records:
+				draft_docs.append(f"{parent_dt}: {row.parent}")
+
+		if draft_docs:
+			frappe.throw(
+				_(
+					"Cannot disable Pricing Rule because it is used in the following draft transactions:<br><br>{0}"
+				).format("<br>".join(draft_docs))
+			)
+
+	
 	def validate_priority_conflict(self):
 		if not self.priority or not self.has_priority:
 			return
