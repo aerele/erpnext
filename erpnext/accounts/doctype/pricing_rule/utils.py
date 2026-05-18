@@ -461,10 +461,11 @@ def validate_quantity_and_amount_for_suggestion(args, qty, amount, item_code, tr
 			fieldname = field
 
 	for field, value in {"max_qty": qty, "max_amt": amount}.items():
+		remaining_percentage = 100 - flt(args.threshold_percentage)
 		if (
 			args.get(field)
 			and value > args.get(field)
-			and (args.get(field) + cint(args.get(field) * args.threshold_percentage * 0.01)) >= value
+			and (args.get(field) + cint(args.get(field) * remaining_percentage * 0.01)) >= value
 		):
 			fieldname = field
 
