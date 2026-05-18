@@ -130,9 +130,10 @@ def get_columns(filters):
 
 def get_data(filters):
 	data = []
-
-	company_list = get_descendants_of("Company", filters.get("company"))
-	company_list.append(filters.get("company"))
+	company_list = []
+	if filters.get("company"):
+		company_list = get_descendants_of("Company", filters.get("company"))
+		company_list.append(filters.get("company"))
 
 	customer_details = get_customer_details()
 	item_details = get_item_details()
@@ -210,7 +211,6 @@ def get_sales_order_details(company_list, filters):
 			(db_so_item.billed_amt * db_so.conversion_rate).as_("billed_amt"),
 		)
 		.where(db_so.docstatus == 1)
-		.where(db_so.company.isin(tuple(company_list)))
 	)
 
 	if filters.get("item_group"):
@@ -227,6 +227,9 @@ def get_sales_order_details(company_list, filters):
 
 	if filters.get("customer"):
 		query = query.where(db_so.customer == filters.customer)
+
+	if company_list:
+		query = query.where(db_so.company.isin(company_list))
 
 	return query.run(as_dict=1)
 
