@@ -1068,10 +1068,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		this.refresh_serial_batch_bundle_field();
 	}
 
-	before_submit() {
-		this.apply_pricing_rule(null, true);
-	}
-
 	refresh_serial_batch_bundle_field() {
 		frappe.route_hooks.after_submit = (frm_obj) => {
 			frm_obj.reload_doc();
