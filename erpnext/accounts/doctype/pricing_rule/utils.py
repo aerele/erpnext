@@ -304,12 +304,15 @@ def _get_tree_conditions(args, parenttype, table, allow_blank=True):
 
 
 def get_other_conditions(conditions, values, args):
+	if not args.get("campaign") and args.get("utm_campaign"):
+		args.campaign = args.get("utm_campaign")
+
 	for field in ["company", "customer", "supplier", "campaign", "sales_partner"]:
 		if args.get(field):
 			conditions += f" and ifnull(`tabPricing Rule`.{field}, '') in (%({field})s, '')"
 			values[field] = args.get(field)
 		else:
-			conditions += f" and ifnull(`tabPricing Rule`.{field}, '') = ''"
+			conditions += f" and ifnull(`tabPricing Rule`.{field}, '') = ''" 
 
 	for parenttype in ["Customer Group", "Territory", "Supplier Group"]:
 		group_condition = _get_tree_conditions(args, parenttype, "`tabPricing Rule`")
