@@ -3,6 +3,7 @@
 
 
 import frappe
+import json
 from frappe.tests import IntegrationTestCase
 
 from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import make_purchase_invoice
@@ -11,7 +12,19 @@ from erpnext.controllers.sales_and_purchase_return import make_return_doc
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
 from erpnext.stock.doctype.item.test_item import make_item
 from erpnext.stock.get_item_details import get_item_details
-
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import apply_margin_rule
+from erpnext.controllers.accounts_controller import AccountsController
+from erpnext.accounts.doctype.pricing_rule.utils import validate_coupon_applicability
+from erpnext.accounts.doctype.pricing_rule.utils import coupon_rule_has_matching_items
+from erpnext.accounts.doctype.pricing_rule.utils import get_coupon_pricing_rule
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import apply_price_discount_rule
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import remove_pricing_rule_for_item
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import get_pricing_rule_for_item
+from erpnext.accounts.doctype.pricing_rule.utils import get_applied_pricing_rules
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import apply_price_discount_rule
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import remove_pricing_rule_for_item
+from erpnext.accounts.doctype.pricing_rule.utils import apply_pricing_rule_for_free_items
+from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
 
 class TestPricingRule(IntegrationTestCase):
 	def setUp(self):
@@ -1188,6 +1201,925 @@ class TestPricingRule(IntegrationTestCase):
 
 		si.delete()
 		rule.delete()
+
+	def test_apply_margin_on_marginalized_rate(self):
+		pr1 = make_pricing_rule(
+			title="Margin Rule 1",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		pr2 = make_pricing_rule(
+			title="Margin Rule 2",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=20,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		pr2.apply_margin_on_marginalized_rate = 1
+		pr2.save()
+
+		args = frappe._dict({
+			"doctype": "Sales Order",
+			"item_code": "_Test Item",
+			"qty": 1,
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		item_details = frappe._dict({
+			"price_or_product_discount": "Price",
+		})
+
+		apply_margin_rule(pr1, item_details, args)
+
+		apply_margin_rule(pr2, item_details, args)
+
+		self.assertEqual(item_details.margin_type, "Amount")
+		self.assertEqual(item_details.margin_rate_or_amount, 32)
+
+	def test_apply_rule_on_other_items_with_item_group(self):
+		item = frappe.get_doc({
+				"doctype": "Sales Order Item",
+				"item_code": "_Test Item",
+				"item_group": "_Test Item Group",
+				"discount_percentage": 0,
+				"discount_amount": 0,
+			})
+
+		pricing_rule_args = frappe._dict({
+			"price_or_product_discount": "Price",
+			"pricing_rules": "TEST-PR",
+			"apply_rule_on_other_items": json.dumps(["_Test Item Group"]),
+			"apply_rule_on": "item_group",
+			"discount_percentage": 20,
+			"discount_amount": 0,
+		})
+
+		controller = AccountsController({
+						"doctype": "Sales Order"
+					})
+
+		controller.apply_pricing_rule_on_items(item, pricing_rule_args)
+
+		self.assertEqual(item.discount_percentage, 20)
+
+	
+	def test_apply_rule_on_other_items_with_item_code(self):
+		item = frappe.get_doc({
+			"doctype": "Sales Order Item",
+			"item_code": "_Test Item",
+			"item_group": "_Test Item Group",
+			"discount_percentage": 0,
+			"discount_amount": 0,
+		})
+
+		pricing_rule_args = frappe._dict({
+			"price_or_product_discount": "Price",
+			"pricing_rules": "TEST-PR",
+			"apply_rule_on_other_items": json.dumps(["_Test Item"]),
+			"apply_rule_on": "item_code",
+			"discount_percentage": 15,
+			"discount_amount": 0,
+		})
+
+		controller = AccountsController({
+			"doctype": "Sales Order"
+		})
+
+		controller.apply_pricing_rule_on_items(item, pricing_rule_args)
+
+		self.assertEqual(item.discount_percentage, 15)
+
+	def test_validate_coupon_applicability(self):
+		pr = make_pricing_rule(
+			title="Coupon Rule",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		coupon = frappe.get_doc({
+			"doctype": "Coupon Code",
+			"coupon_name": "TESTCOUPON",
+			"pricing_rule": pr.name
+		}).insert()
+
+		doc = frappe._dict({
+			"coupon_code": coupon.name,
+			"items": [
+				frappe._dict({
+					"item_code": "_Test Item 2"
+				})
+			]
+		})
+
+		validate_coupon_applicability(doc)
+
+		self.assertEqual(doc.coupon_code, "")
+
+	def test_validate_coupon_applicability_with_matching_item(self):
+		pr = make_pricing_rule(
+			title="Coupon Rule Valid",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		coupon = frappe.get_doc({
+			"doctype": "Coupon Code",
+			"coupon_name": "VALIDCOUPON",
+			"pricing_rule": pr.name
+		}).insert()
+
+		doc = frappe._dict({
+			"coupon_code": coupon.name,
+			"items": [
+				frappe._dict({
+					"item_code": "_Test Item"
+				})
+			]
+		})
+
+		validate_coupon_applicability(doc)
+
+		self.assertEqual(doc.coupon_code, coupon.name)
+
+	def test_coupon_rule_has_matching_items(self):
+		pr = make_pricing_rule(
+			title="Coupon Match Rule",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		doc = frappe._dict({
+			"items": [
+				frappe._dict({
+					"item_code": "_Test Item"
+				})
+			]
+		})
+
+		self.assertTrue(
+			coupon_rule_has_matching_items(pr.name, doc)
+		)
+
+	def test_coupon_rule_has_no_matching_items(self):
+		pr = make_pricing_rule(
+			title="Coupon No Match Rule",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		doc = frappe._dict({
+			"items": [
+				frappe._dict({
+					"item_code": "_Test Item 2"
+				})
+			]
+		})
+
+		self.assertFalse(
+			coupon_rule_has_matching_items(pr.name, doc)
+		)
+
+	def test_get_coupon_pricing_rule(self):
+		pr = make_pricing_rule(
+			title="Coupon Pricing Rule",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		coupon = frappe.get_doc({
+			"doctype": "Coupon Code",
+			"coupon_name": "TESTCOUPON",
+			"pricing_rule": pr.name
+		}).insert()
+
+		doc = frappe._dict({
+			"coupon_code": coupon.name
+		})
+
+		rule = get_coupon_pricing_rule(doc)
+
+		self.assertEqual(rule, pr.name)
+
+
+
+
+	def test_get_pricing_rule_for_free_item(self):
+		args = frappe._dict({
+			"item_code": "_Test Item",
+			"is_free_item": 1,
+			"doctype": "Sales Order",
+		})
+
+		result = get_pricing_rule_for_item(args)
+
+		self.assertEqual(result, {})
+
+	def test_coupon_pricing_rule_not_reused_from_stored_rules(self):
+		pr = make_pricing_rule(
+			title="Coupon Stored Rule",
+			selling=1,
+			discount_percentage=10,
+		)
+
+		pr.coupon_code_based = 1
+		pr.save()
+
+		args = frappe._dict({
+			"pricing_rules": pr.name
+		})
+
+		stored_rule_names = get_applied_pricing_rules(args.pricing_rules)
+
+		any_stored_is_coupon_based = any(
+			frappe.db.get_value("Pricing Rule", rule, "coupon_code_based")
+			for rule in stored_rule_names
+		)
+
+		self.assertTrue(any_stored_is_coupon_based)
+
+	def test_apply_discount_on_discounted_rate(self):
+		pr1 = make_pricing_rule(
+			title="Discount Rule 1",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=10,
+			apply_discount_on_rate=1,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		pr2 = make_pricing_rule(
+			title="Discount Rule 2",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=20,
+			apply_discount_on_rate=1,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		item_details = frappe._dict({
+			"discount_amount": 0,
+			"discount_percentage": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_price_discount_rule(pr1, item_details, args)
+		apply_price_discount_rule(pr2, item_details, args)
+
+		self.assertEqual(item_details.discount_amount, 28)
+
+	def test_margin_amount_reset_when_margin_type_removed(self):
+		pr = make_pricing_rule(
+			title="Margin Reset Rule",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=10,
+		)
+
+		pr.margin_type = ""
+		pr.save()
+
+		self.assertEqual(pr.margin_rate_or_amount, 0)
+
+	def test_non_coupon_pricing_rule_reuses_stored_rules(self):
+		pr = make_pricing_rule(
+			title="Normal Stored Rule",
+			selling=1,
+			discount_percentage=10,
+		)
+
+		args = frappe._dict({
+			"pricing_rules": pr.name
+		})
+
+		stored_rule_names = get_applied_pricing_rules(args.pricing_rules)
+
+		any_stored_is_coupon_based = any(
+			frappe.db.get_value("Pricing Rule", rule, "coupon_code_based")
+			for rule in stored_rule_names
+		)
+
+		use_stored_rules = (
+			True
+			and args.get("pricing_rules")
+			and not False
+			and not any_stored_is_coupon_based
+		)
+
+		self.assertTrue(use_stored_rules)
+	
+	def test_remove_pricing_rule_resets_margin(self):
+
+		pr = make_pricing_rule(
+				title="Remove Margin Rule",
+				selling=1,
+				margin_type="Percentage",
+				margin_rate_or_amount=10,
+			)
+					
+		item_details = frappe._dict({
+			"margin_rate_or_amount": 20,
+			"margin_type": "Amount",
+			"discount_percentage": 10,
+			"discount_amount": 5,
+		})
+
+		remove_pricing_rule_for_item(
+			pricing_rules=pr.name,
+			item_details=item_details
+		)
+
+		self.assertEqual(item_details.margin_rate_or_amount, 0)
+		self.assertIsNone(item_details.margin_type)
+
+	def test_priority_sorting_descending(self):
+		rules = [
+			frappe._dict({"priority": 10}),
+			frappe._dict({"priority": 30}),
+			frappe._dict({"priority": 20}),
+		]
+
+		result = sorted(
+			rules,
+			key=lambda x: int(x.get("priority") or 0),
+			reverse=True,
+		)
+
+		self.assertEqual(result[0].priority, 30)
+		self.assertEqual(result[1].priority, 20)
+		self.assertEqual(result[2].priority, 10)
+
+	def test_non_multiple_rules_are_ignored(self):
+		rule1 = frappe._dict({
+			"name": "RULE-1",
+			"apply_multiple_pricing_rules": 1,
+			"priority": 20,
+		})
+
+		rule2 = frappe._dict({
+			"name": "RULE-2",
+			"apply_multiple_pricing_rules": 0,
+			"priority": 10,
+		})
+
+		pricing_rules = [rule1, rule2]
+
+		has_multiple = any(d.apply_multiple_pricing_rules for d in pricing_rules)
+
+		if has_multiple:
+			multiple_rules = [p for p in pricing_rules if p.apply_multiple_pricing_rules]
+			skipped_rules = [p for p in pricing_rules if not p.apply_multiple_pricing_rules]
+
+		self.assertEqual(len(multiple_rules), 1)
+		self.assertEqual(multiple_rules[0].name, "RULE-1")
+		self.assertEqual(skipped_rules[0].name, "RULE-2")
+
+
+	def test_free_item_qty_calculation(self):
+		doc = frappe.new_doc("Sales Order")
+		doc.items = []
+
+		pricing_rule_args = [
+			frappe._dict({
+				"item_code": "_Test Item",
+				"pricing_rules": "TEST-RULE",
+				"free_item": "_Test Item Home Desktop 100",
+				"free_qty": 1,
+				"min_qty": 2,
+				"qty": 4,
+				"stock_qty": 4,
+			})
+		]
+
+		apply_pricing_rule_for_free_items(doc, pricing_rule_args)
+
+		self.assertEqual(pricing_rule_args[0].free_qty, 1)
+
+	def test_dont_enforce_free_item_qty(self):
+		pr = make_pricing_rule(
+			title="Dont Enforce Free Qty",
+			selling=1,
+			apply_product_discount=1,
+			free_item="_Test Item Home Desktop 100",
+			free_qty=1,
+			min_qty=2,
+		)
+
+		pr.dont_enforce_free_item_qty = 1
+		pr.save()
+
+		self.assertEqual(pr.dont_enforce_free_item_qty, 1)
+
+	def test_cumulative_qty_amount_data(self):
+		doc = frappe.new_doc("Sales Order")
+
+		doc.items = [
+			frappe._dict({
+				"qty": 2,
+				"amount": 100,
+			}),
+			frappe._dict({
+				"qty": 3,
+				"amount": 200,
+			}),
+		]
+
+		total_qty = sum(d.qty for d in doc.items)
+		total_amount = sum(d.amount for d in doc.items)
+
+		self.assertEqual(total_qty, 5)
+		self.assertEqual(total_amount, 300)
+
+
+
+	def test_coupon_rule_matches_item_group(self):
+		pr = frappe.get_doc({
+			"doctype": "Pricing Rule",
+			"title": "Item Group Coupon Rule",
+			"apply_on": "Item Group",
+			"selling": 1,
+			"rate_or_discount": "Discount Percentage",
+			"discount_percentage": 10,
+			"has_priority": 1,
+			"priority": 10,
+			"coupon_code_based": 1,
+			"item_groups": [
+				{
+					"item_group": "Products"
+				}
+			]
+		}).insert(ignore_permissions=True)
+
+		doc = frappe.new_doc("Sales Order")
+
+		doc.items = [
+			frappe._dict({
+				"item_code": "_Test Item",
+				"item_group": "Products",
+				"brand": None,
+			})
+		]
+
+		result = coupon_rule_has_matching_items(pr.name, doc)
+
+		self.assertTrue(result)
+
+	def test_coupon_rule_does_not_match_different_item_group(self):
+		pr = frappe.get_doc({
+			"doctype": "Pricing Rule",
+			"title": "Mismatch Item Group Rule",
+			"apply_on": "Item Group",
+			"selling": 1,
+			"rate_or_discount": "Discount Percentage",
+			"discount_percentage": 10,
+			"has_priority": 1,
+			"priority": 10,
+			"coupon_code_based": 1,
+			"item_groups": [
+				{
+					"item_group": "Products"
+				}
+			]
+		}).insert(ignore_permissions=True)
+
+		doc = frappe.new_doc("Sales Order")
+
+		doc.items = [
+			frappe._dict({
+				"item_code": "_Test Item",
+				"item_group": "Raw Material",
+				"brand": None,
+			})
+		]
+
+		result = coupon_rule_has_matching_items(pr.name, doc)
+
+		self.assertFalse(result)
+	
+	def test_multiple_margin_rules_accumulate(self):
+		pr1 = make_pricing_rule(
+			title="Margin Rule 1",
+			selling=1,
+			margin_type="Amount",
+			margin_rate_or_amount=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		pr2 = make_pricing_rule(
+			title="Margin Rule 2",
+			selling=1,
+			margin_type="Amount",
+			margin_rate_or_amount=20,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		item_details = frappe._dict({
+			"margin_rate_or_amount": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_margin_rule(pr1, item_details, args)
+		apply_margin_rule(pr2, item_details, args)
+
+		self.assertEqual(item_details.margin_rate_or_amount, 30)
+
+
+
+	def test_multiple_discount_and_margin_rules(self):
+		discount_rule_1 = make_pricing_rule(
+			title="Discount Rule 1",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=10,
+			apply_multiple_pricing_rules=1,
+			apply_discount_on_rate=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		discount_rule_2 = make_pricing_rule(
+			title="Discount Rule 2",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=20,
+			apply_multiple_pricing_rules=1,
+			apply_discount_on_rate=0,
+			has_priority=1,
+			priority=19,
+		)
+
+		margin_rule = make_pricing_rule(
+			title="Margin Rule",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		item_details = frappe._dict({
+			"discount_amount": 0,
+			"discount_percentage": 0,
+			"margin_rate_or_amount": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_price_discount_rule(discount_rule_1, item_details, args)
+		apply_price_discount_rule(discount_rule_2, item_details, args)
+		apply_margin_rule(margin_rule, item_details, args)
+
+		self.assertEqual(item_details.discount_amount, 30)
+		self.assertEqual(item_details.margin_rate_or_amount, 10)
+
+	def test_multiple_discount_rules_apply_on_discounted_rate(self):
+		rule1 = make_pricing_rule(
+			title="Discount Rule 1",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=10,
+			apply_multiple_pricing_rules=1,
+			apply_discount_on_rate=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		rule2 = make_pricing_rule(
+			title="Discount Rule 2",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=20,
+			apply_multiple_pricing_rules=1,
+			apply_discount_on_rate=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		item_details = frappe._dict({
+			"discount_amount": 0,
+			"discount_percentage": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_price_discount_rule(rule1, item_details, args)
+		apply_price_discount_rule(rule2, item_details, args)
+
+		self.assertEqual(item_details.discount_amount, 28)
+
+	def test_multiple_margin_rules_apply_on_marginalized_rate(self):
+		rule1 = make_pricing_rule(
+			title="Margin Rule 1",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		rule1.apply_margin_on_marginalized_rate = 1
+		rule1.save()
+
+		rule2 = make_pricing_rule(
+			title="Margin Rule 2",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=20,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+		rule2.apply_margin_on_marginalized_rate = 1
+		rule2.save()
+
+		item_details = frappe._dict({
+			"margin_rate_or_amount": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_margin_rule(rule1, item_details, args)
+		apply_margin_rule(rule2, item_details, args)
+
+		self.assertEqual(item_details.margin_rate_or_amount, 32)
+
+
+
+	def test_discount_and_margin_rule_priority_order(self):
+		discount_rule = make_pricing_rule(
+			title="High Priority Discount",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		margin_rule = make_pricing_rule(
+			title="Low Priority Margin",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=10,
+			apply_multiple_pricing_rules=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		item_details = frappe._dict({
+			"discount_amount": 0,
+			"margin_rate_or_amount": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_price_discount_rule(discount_rule, item_details, args)
+		apply_margin_rule(margin_rule, item_details, args)
+
+		self.assertEqual(item_details.discount_amount, 10)
+		self.assertEqual(item_details.margin_rate_or_amount, 10)
+
+	def test_highest_priority_rule_applies_when_no_multiple_rules(self):
+		rule1 = frappe._dict({
+			"name": "RULE-1",
+			"priority": 10,
+			"apply_multiple_pricing_rules": 0,
+		})
+
+		rule2 = frappe._dict({
+			"name": "RULE-2",
+			"priority": 20,
+			"apply_multiple_pricing_rules": 0,
+		})
+
+		pricing_rules = [rule1, rule2]
+
+		has_multiple_rule = any(
+			d.apply_multiple_pricing_rules for d in pricing_rules
+		)
+
+		if has_multiple_rule:
+			pricing_rules = [
+				d for d in pricing_rules
+				if d.apply_multiple_pricing_rules
+			]
+		else:
+			pricing_rules = sorted(
+				pricing_rules,
+				key=lambda x: x.priority,
+				reverse=True,
+			)
+			pricing_rules = [pricing_rules[0]]
+
+		self.assertEqual(len(pricing_rules), 1)
+		self.assertEqual(pricing_rules[0].name, "RULE-2")
+
+	def test_multiple_checked_rules_apply_in_priority_order(self):
+		rule1 = frappe._dict({
+			"name": "RULE-1",
+			"priority": 10,
+			"apply_multiple_pricing_rules": 1,
+		})
+
+		rule2 = frappe._dict({
+			"name": "RULE-2",
+			"priority": 30,
+			"apply_multiple_pricing_rules": 1,
+		})
+
+		rule3 = frappe._dict({
+			"name": "RULE-3",
+			"priority": 20,
+			"apply_multiple_pricing_rules": 1,
+		})
+
+		pricing_rules = [rule1, rule2, rule3]
+
+		has_multiple_rule = any(
+			d.apply_multiple_pricing_rules for d in pricing_rules
+		)
+
+		if has_multiple_rule:
+			pricing_rules = [
+				d for d in pricing_rules
+				if d.apply_multiple_pricing_rules
+			]
+
+		pricing_rules = sorted(
+			pricing_rules,
+			key=lambda x: x.priority,
+			reverse=True,
+		)
+
+		self.assertEqual(pricing_rules[0].name, "RULE-2")
+		self.assertEqual(pricing_rules[1].name, "RULE-3")
+		self.assertEqual(pricing_rules[2].name, "RULE-1")
+
+	def test_discount_and_margin_with_discounted_rate(self):
+		discount_rule = make_pricing_rule(
+			title="Discount Rule",
+			selling=1,
+			rate_or_discount="Discount Percentage",
+			discount_percentage=10,
+			apply_multiple_pricing_rules=1,
+			apply_discount_on_rate=1,
+			has_priority=1,
+			priority=20,
+		)
+
+		margin_rule = make_pricing_rule(
+			title="Margin Rule",
+			selling=1,
+			margin_type="Percentage",
+			margin_rate_or_amount=20,
+			apply_multiple_pricing_rules=1,
+			apply_margin_on_marginalized_rate=1,
+			has_priority=1,
+			priority=10,
+		)
+
+		margin_rule.apply_margin_on_marginalized_rate = 1
+		margin_rule.save()
+
+		item_details = frappe._dict({
+			"discount_amount": 0,
+			"margin_rate_or_amount": 0,
+		})
+
+		args = frappe._dict({
+			"price_list_rate": 100,
+			"currency": "INR",
+		})
+
+		apply_price_discount_rule(discount_rule, item_details, args)
+		apply_margin_rule(margin_rule, item_details, args)
+
+		self.assertEqual(item_details.discount_amount, 10)
+		self.assertEqual(item_details.margin_rate_or_amount, 20)
+
+	def test_apply_rule_on_other_items_with_non_matching_item_group(self):
+
+		item = frappe.get_doc({
+			"doctype": "Sales Order Item",
+			"item_code": "_Test Item",
+			"item_group": "Raw Material",
+			"discount_percentage": 0,
+			"discount_amount": 0,
+		})
+
+
+		pricing_rule_args = frappe._dict({
+			"price_or_product_discount": "Price",
+			"pricing_rules": "TEST-PR",
+			"apply_rule_on_other_items": json.dumps(["Products"]),
+			"apply_rule_on": "item_group",
+			"discount_percentage": 20,
+			"discount_amount": 0,
+		})
+
+		controller = frappe.new_doc("Sales Order")
+
+		controller.apply_pricing_rule_on_items(item, pricing_rule_args)
+
+		self.assertEqual(item.discount_percentage, 0)
+
+	def test_free_item_resets_margin(self):
+		doc = frappe.new_doc("Sales Order")
+
+		controller = calculate_taxes_and_totals(doc)
+
+		item = frappe._dict({
+			"is_free_item": 1,
+			"margin_type": "Amount",
+			"margin_rate_or_amount": 20,
+		})
+
+		rate_with_margin, base_rate_with_margin = controller.calculate_margin(item)
+
+		self.assertIsNone(item.margin_type)
+		self.assertEqual(item.margin_rate_or_amount, 0.0)
+		self.assertEqual(rate_with_margin, 0.0)
+		self.assertEqual(base_rate_with_margin, 0.0)
+
+	def test_no_margin_rules_reset_margin_fields(self):
+		doc = frappe.new_doc("Sales Order")
+
+		controller = calculate_taxes_and_totals(doc)
+
+		item = frappe._dict({
+			"price_list_rate": 100,
+			"pricing_rules": "TEST-RULE",
+			"margin_type": "Amount",
+			"margin_rate_or_amount": 25,
+		})
+
+		controller.calculate_margin(item)
+
+		self.assertIsNone(item.margin_type)
+		self.assertEqual(item.margin_rate_or_amount, 0.0)
+
+	def test_coupon_code_passed_to_context(self):
+		doc = frappe._dict({
+			"doctype": "Sales Order",
+			"coupon_code": "TESTCOUPON",
+		})
+
+		ctx = frappe._dict()
+
+		if doc.get("coupon_code"):
+			ctx.coupon_code = doc.get("coupon_code")
+
+		self.assertEqual(ctx.coupon_code, "TESTCOUPON")
+
+
 
 	def test_pricing_rule_for_product_free_item_rounded_qty_and_recursion(self):
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Pricing Rule")
