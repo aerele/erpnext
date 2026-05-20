@@ -17,7 +17,6 @@ class SalesForecastItem(Document):
 		adjust_qty: DF.Float
 		delivery_date: DF.Date | None
 		demand_qty: DF.Float
-		forecast_qty: DF.Float
 		item_code: DF.Link
 		item_name: DF.Data | None
 		parent: DF.Data
