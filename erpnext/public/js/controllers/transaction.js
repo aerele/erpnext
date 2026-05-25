@@ -2351,6 +2351,34 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		return item_list;
 	}
 
+	notify_pricing_rule_applied() {
+    const items = this.frm.doc.items || [];
+
+    const has_row_level = items.some(
+        d => d.pricing_rules && !d.is_free_item
+    );
+    const has_transaction_level = items.some(
+        d => d.is_free_item
+    );
+
+    let msg = "";
+    if (has_row_level && has_transaction_level) {
+        msg = __("Pricing rules applied: Row level and Transaction level");
+    } else if (has_row_level) {
+        msg = __("Pricing rules applied: Row level");
+    } else if (has_transaction_level) {
+        msg = __("Pricing rules applied: Transaction level");
+    }
+
+    if (msg) {
+        frappe.show_alert({ message: msg, indicator: "green" }, 5);
+    }
+		}
+
+	after_save(){
+		this.notify_pricing_rule_applied();
+	}
+
 	_set_values_for_item_list(children,from_pricing_rule=false) {
 
 		const items_rule_dict = {};
