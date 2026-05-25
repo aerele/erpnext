@@ -1811,10 +1811,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 	process_item_removal() {
 		this.frm.trigger("calculate_taxes_and_totals");
 		this.frm.trigger("calculate_net_weight");
-		// added code to apply pricing rule when a row is being deleted
-		if (removed_row && removed_row.is_free_item) {
-			return;
-		}
 		this.apply_pricing_rule(null, true);
 	}
 
