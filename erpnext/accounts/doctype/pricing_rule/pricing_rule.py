@@ -156,43 +156,67 @@ class PricingRule(Document):
 		apply_on_field = frappe.scrub(self.apply_on)
 		apply_on_table = apply_on_dict.get(self.apply_on)
 
-		if not apply_on_table:
-			return
+		if apply_on_table:
 
-		items_in_this_rule = [d.get(apply_on_field) for d in self.get(apply_on_table)]
+			items_in_this_rule = [d.get(apply_on_field) for d in self.get(apply_on_table)]
 
-		for item_value in items_in_this_rule:
-			# if there are other rules with same prority , conflict throw
+			for item_value in items_in_this_rule:
+				# if there are other rules with same prority , conflict throw
+				conflicting_rules = frappe.db.sql("""
+					select pr.name
+					from `tabPricing Rule` pr
+					inner join `tab{child_doc}` child
+						on child.parent = pr.name
+					where pr.name != %(name)s
+						and pr.priority = %(priority)s
+						and pr.disable = 0
+						and pr.apply_on = %(apply_on)s
+						and pr.selling = %(selling)s
+						and pr.buying = %(buying)s
+						and child.{apply_on_field} = %(item_value)s
+				""".format(
+					child_doc=f"Pricing Rule {self.apply_on}",
+					apply_on_field=apply_on_field
+				), {
+					"name": self.name,
+					"priority": self.priority,
+					"apply_on": self.apply_on,
+					"selling": self.selling,
+					"buying": self.buying,
+					"item_value": item_value,
+				}, as_dict=1)
+
+				if conflicting_rules:
+					frappe.throw(
+						_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
+							self.priority,
+							self.apply_on,
+							frappe.bold(item_value),
+							frappe.bold(conflicting_rules[0].name)
+						)
+					)
+
+		else:
+			# if apply_on is Transaction, then check for all rules with same priority and transaction type
 			conflicting_rules = frappe.db.sql("""
-				select pr.name
-				from `tabPricing Rule` pr
-				inner join `tab{child_doc}` child
-					on child.parent = pr.name
-				where pr.name != %(name)s
-					and pr.priority = %(priority)s
-					and pr.disable = 0
-					and pr.apply_on = %(apply_on)s
-					and pr.selling = %(selling)s
-					and pr.buying = %(buying)s
-					and child.{apply_on_field} = %(item_value)s
-			""".format(
-				child_doc=f"Pricing Rule {self.apply_on}",
-				apply_on_field=apply_on_field
-			), {
+				select name from `tabPricing Rule`
+				where name != %(name)s
+					and priority = %(priority)s
+					and disable = 0
+					and apply_on = 'Transaction'
+					and selling = %(selling)s
+					and buying = %(buying)s
+			""", {
 				"name": self.name,
 				"priority": self.priority,
-				"apply_on": self.apply_on,
 				"selling": self.selling,
 				"buying": self.buying,
-				"item_value": item_value,
 			}, as_dict=1)
 
 			if conflicting_rules:
 				frappe.throw(
-					_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
+					_("Priority {0} is already set for Transaction in Pricing Rule {1}. No two Pricing Rules should have the same priority for the same transaction type.").format(
 						self.priority,
-						self.apply_on,
-						frappe.bold(item_value),
 						frappe.bold(conflicting_rules[0].name)
 					)
 				)
@@ -461,7 +485,6 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 		doc = frappe.get_doc(doc)
 
 	if args.get("is_free_item") or args.get("parenttype") == "Material Request":
-
 		return {}
 
 	item_details = frappe._dict(
@@ -559,9 +582,6 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 						),
 					}
 				)
-
-
-
 				if pricing_rule.apply_rule_on_other_items:
 					item_details["apply_rule_on_other_items"] = json.dumps(
 						pricing_rule.apply_rule_on_other_items
@@ -585,6 +605,10 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 
 		if not doc:
 			return item_details
+		if item_details.get("free_item_data"):
+			from erpnext.accounts.doctype.pricing_rule.utils import apply_pricing_rule_for_free_items
+			apply_pricing_rule_for_free_items(doc, item_details.free_item_data)
+				
 
 	elif args.get("pricing_rules"):
 		item_details = remove_pricing_rule_for_item(
@@ -593,9 +617,8 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 			item_code=args.get("item_code"),
 			rate=args.get("price_list_rate"),
 		)
-
-
 	return item_details
+
 
 
 def update_args_for_pricing_rule(args):
