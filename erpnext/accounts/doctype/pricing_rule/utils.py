@@ -895,10 +895,23 @@ def validate_coupon_applicability(doc,method = None):
         doc.coupon_code = ""
 
 
+# def remove_free_item(doc):
+# 	for d in doc.items:
+# 		if d.is_free_item:
+# 			doc.remove(d)
+
 def remove_free_item(doc):
-	for d in doc.items:
-		if d.is_free_item:
-			doc.remove(d)
+    for item in doc.items[:]:
+        if not item.is_free_item:
+            continue
+        if not item.pricing_rules:
+            doc.remove(item)
+            continue
+        rule_apply_on = frappe.db.get_value(
+            "Pricing Rule", item.pricing_rules, "apply_on"
+        )
+        if rule_apply_on == "Transaction":
+            doc.remove(item)
 
 
 def get_applied_pricing_rules(pricing_rules):
@@ -913,7 +926,6 @@ def get_applied_pricing_rules(pricing_rules):
 
 def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 
-
 	free_item = pricing_rule.free_item
 	if pricing_rule.same_item and pricing_rule.get("apply_on") != "Transaction":
 		free_item = item_details.item_code or args.item_code
@@ -922,7 +934,6 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 
 	if pricing_rule.is_recursive:
 		qty = 0
-
 		transaction_qty = 0
 
 		for row in doc.items:
@@ -947,7 +958,7 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 
 		transaction_qty = transaction_qty - pricing_rule.apply_recursion_over
 		if transaction_qty and transaction_qty > 0:
-			qty = flt(transaction_qty) * qty / pricing_rule.recurse_for
+			qty = flt(transaction_qty) * (pricing_rule.free_qty or 1) / pricing_rule.recurse_for
 
 			if pricing_rule.round_free_qty:
 				qty = (flt(transaction_qty) // pricing_rule.recurse_for) * (pricing_rule.free_qty or 1)
@@ -955,6 +966,7 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 	if not qty:
 		return
 
+	
 	free_item_data_args = {
 		"item_code": free_item,
 		"qty": qty,
@@ -962,6 +974,10 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 		"rate": pricing_rule.free_item_rate or 0,
 		"price_list_rate": pricing_rule.free_item_rate or 0,
 		"is_free_item": 1,
+		"warehouse": next(
+        (row.warehouse for row in doc.items if not row.is_free_item),
+        None
+    ) if doc else None,
 	}
 
 	item_data = frappe.get_cached_value(
@@ -969,6 +985,7 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 	)
 
 	free_item_data_args.update(item_data)
+
 	free_item_data_args["uom"] = pricing_rule.free_item_uom or item_data.stock_uom
 	free_item_data_args["conversion_factor"] = get_conversion_factor(
 		free_item, free_item_data_args["uom"]
@@ -1024,6 +1041,19 @@ def apply_pricing_rule_for_free_items(doc, pricing_rule_args):
 			if doc.is_new() or not frappe.db.get_value(
 				"Pricing Rule", free_item["pricing_rules"], "dont_enforce_free_item_qty"
 			):
+				# waittt
+				if doc.items:
+					item = doc.items[0]
+
+					if hasattr(item, "cost_center"):
+						free_item["cost_center"] = item.cost_center
+
+					if hasattr(item, "income_account"):
+						free_item["income_account"] = item.income_account
+
+					if hasattr(item, "expense_account"):
+						free_item["expense_account"] = item.expense_account
+
 				doc.append("items", free_item)
 
 
