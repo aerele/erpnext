@@ -1015,6 +1015,9 @@ class AccountsController(TransactionBase):
 			self.pricing_rules = []
 
 			for item in self.get("items"):
+				if item.get("is_free_item"):
+
+					continue
 				if item.get("item_code"):
 					ctx: ItemDetailsCtx = ItemDetailsCtx(parent_dict.copy())
 					ctx.update(item.as_dict())
