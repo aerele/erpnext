@@ -57,7 +57,7 @@ class calculate_taxes_and_totals:
 			return self.calculate(ignore_tax_template_validation=True)
 
 		# Update grand total as per cash and non trade discount
-		if self.doc.apply_discount_on == "Grand Total" and self.doc.get("is_cash_or_non_trade_discount"):
+		if self.doc.apply_discount_on == "Grand Total" and (self.doc.get("is_cash_or_non_trade_discount") or self.doc.get("discount_from_pricing_rule")):
 			self.doc.grand_total -= self.doc.discount_amount
 			self.doc.base_grand_total -= self.doc.base_discount_amount
 			self.doc.rounding_adjustment = self.doc.base_rounding_adjustment = 0.0
@@ -814,7 +814,7 @@ class calculate_taxes_and_totals:
 				self.doc.precision("base_discount_amount"),
 			)
 
-			if self.doc.apply_discount_on == "Grand Total" and self.doc.get("is_cash_or_non_trade_discount"):
+			if self.doc.apply_discount_on == "Grand Total" and (self.doc.get("is_cash_or_non_trade_discount") or self.doc.get("discount_from_pricing_rule")):
 				self.discount_amount_applied = True
 				return
 
