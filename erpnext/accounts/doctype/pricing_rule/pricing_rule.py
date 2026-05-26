@@ -139,7 +139,8 @@ class PricingRule(Document):
 			)
 
 			for row in records:
-				draft_docs.append(f"{parent_dt}: {row.parent}")
+				if self.name in frappe.parse_json(row.pricing_rules or "[]"):
+						draft_docs.append(f"{parent_dt}: {row.parent}")
 
 		if draft_docs:
 			frappe.throw(
@@ -148,7 +149,7 @@ class PricingRule(Document):
 				).format("<br>".join(draft_docs))
 			)
 
-	
+
 	def validate_priority_conflict(self):
 		if not self.priority or not self.has_priority:
 			return
@@ -238,7 +239,7 @@ class PricingRule(Document):
 				frappe.bold(_("Apply Multiple Pricing Rules")), frappe.bold(_("Priority"))
 			))
 
-		
+
 		if self.has_priority and not self.priority:
 			throw(_("Priority is mandatory"), frappe.MandatoryError, _("Please Set Priority"))
 
@@ -405,21 +406,21 @@ class PricingRule(Document):
 def apply_pricing_rule(args: str | dict, doc: str | dict | Document | None = None):
 	"""
 	args = {
-	        "items": [{"doctype": "", "name": "", "item_code": "", "brand": "", "item_group": ""}, ...],
-	        "customer": "something",
-	        "customer_group": "something",
-	        "territory": "something",
-	        "supplier": "something",
-	        "supplier_group": "something",
-	        "currency": "something",
-	        "conversion_rate": "something",
-	        "price_list": "something",
-	        "plc_conversion_rate": "something",
-	        "company": "something",
-	        "transaction_date": "something",
-	        "campaign": "something",
-	        "sales_partner": "something",
-	        "ignore_pricing_rule": "something"
+			"items": [{"doctype": "", "name": "", "item_code": "", "brand": "", "item_group": ""}, ...],
+			"customer": "something",
+			"customer_group": "something",
+			"territory": "something",
+			"supplier": "something",
+			"supplier_group": "something",
+			"currency": "something",
+			"conversion_rate": "something",
+			"price_list": "something",
+			"plc_conversion_rate": "something",
+			"company": "something",
+			"transaction_date": "something",
+			"campaign": "something",
+			"sales_partner": "something",
+			"ignore_pricing_rule": "something"
 	}
 	"""
 
@@ -520,16 +521,16 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 	)
 
 	any_stored_is_coupon_based = any(
-    frappe.db.get_value("Pricing Rule", r, "coupon_code_based")
-    for r in stored_rule_names
-    if r and frappe.db.exists("Pricing Rule", r)
+	frappe.db.get_value("Pricing Rule", r, "coupon_code_based")
+	for r in stored_rule_names
+	if r and frappe.db.exists("Pricing Rule", r)
 	)
 
 	use_stored_rules = (
-    for_validate
-    and args.get("pricing_rules")
-    and not doc_has_coupon
-    and not any_stored_is_coupon_based
+	for_validate
+	and args.get("pricing_rules")
+	and not doc_has_coupon
+	and not any_stored_is_coupon_based
 	)
 
 
@@ -608,7 +609,7 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 		if item_details.get("free_item_data"):
 			from erpnext.accounts.doctype.pricing_rule.utils import apply_pricing_rule_for_free_items
 			apply_pricing_rule_for_free_items(doc, item_details.free_item_data)
-				
+
 
 	elif args.get("pricing_rules"):
 		item_details = remove_pricing_rule_for_item(
@@ -663,7 +664,7 @@ def get_pricing_rule_details(args, pricing_rule):
 
 def apply_margin_rule(pricing_rule, item_details, args):
 	"""Apply margin from a pricing rule. Independent of Price/Product discount mode."""
-	
+
 	if not (
 		(pricing_rule.margin_type in ["Amount", "Percentage"] and pricing_rule.currency == args.currency)
 		or pricing_rule.margin_type == "Percentage"
@@ -699,9 +700,9 @@ def apply_margin_rule(pricing_rule, item_details, args):
 
 	# always set margin_type to Amount since converted percentages to amounts
 	item_details.margin_type = "Amount"
-	
+
 def apply_price_discount_rule(pricing_rule, item_details, args):
-	
+
 	item_details.pricing_rule_for = pricing_rule.rate_or_discount
 
 	if pricing_rule.rate_or_discount == "Rate":
@@ -759,7 +760,7 @@ def apply_price_discount_rule(pricing_rule, item_details, args):
 
 		item_details.discount_percentage = 0.0
 
-	
+
 @frappe.whitelist()
 def remove_pricing_rule_for_item(
 	pricing_rules: str | None,
