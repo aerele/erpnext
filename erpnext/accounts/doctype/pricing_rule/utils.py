@@ -641,9 +641,6 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 		if pr_doc.get(party_field) and parent_meta.has_field(party_field):
 			query = query.where(Parent[party_field] == pr_doc.get(party_field))
 
-		if pr_doc.get("modified"):
-			query = query.where(Parent.creation >= pr_doc.get("modified"))
-
 		if doc.get("name"):
 			query = query.where(Parent.name != doc.get("name"))
 
@@ -670,10 +667,6 @@ def get_qty_amount_data_for_cumulative(pr_doc, doc, items=None):
 		)
 
 		values.extend(items)
-	
-	if pr_doc.get("modified"):
-		condition += f" and `tab{doctype}`.creation >= %s"
-		values.append(pr_doc.get("modified"))
 
 	data_set = frappe.db.sql(
 		f""" SELECT `tab{child_doctype}`.stock_qty,
@@ -801,7 +794,6 @@ def apply_pricing_rule_on_transaction(doc):
 	accumulated_discount_amount = 0.0
 	base_total = flt(doc.total)
 	applied_transaction_rules = []
-	coupon_short_circuited = False
 
 	for d in pricing_rules:
 		if d.price_or_product_discount == "Price":
@@ -826,7 +818,6 @@ def apply_pricing_rule_on_transaction(doc):
 						else:
 							accumulated_discount_amount = flt(d.discount_amount)
 						applied_transaction_rules = [d.name]   
-						coupon_short_circuited = True
 						break
 				continue
 
