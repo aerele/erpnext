@@ -523,7 +523,7 @@ def get_pricing_rule_for_item(args, doc=None, for_validate=False):
 	any_stored_is_coupon_based = any(
 	frappe.db.get_value("Pricing Rule", r, "coupon_code_based")
 	for r in stored_rule_names
-	if r and frappe.db.exists("Pricing Rule", r)
+	if r 
 	)
 
 	use_stored_rules = (
