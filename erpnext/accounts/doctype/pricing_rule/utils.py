@@ -939,7 +939,7 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 		for row in doc.items:
 			if row.is_free_item:
 				continue
-			if pricing_rule.name in (row.pricing_rules or ""):
+			if pricing_rule.name in frappe.parse_json(row.pricing_rules or "[]"):
 				transaction_qty += row.qty
 
 		if args and args.get("item_code") and not args.get("is_free_item"):
@@ -948,7 +948,7 @@ def get_product_discount_rule(pricing_rule, item_details, args=None, doc=None):
 			row_id = args.get("child_docname") or args.get("name")
 			already_counted = any(
 				not row.is_free_item
-				and pricing_rule.name in (row.pricing_rules or "")
+				and pricing_rule.name in frappe.parse_json(row.pricing_rules or "[]") 
 				and row.get("name") == row_id
 				for row in doc.items
 			)
