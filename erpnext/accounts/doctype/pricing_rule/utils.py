@@ -846,6 +846,8 @@ def apply_pricing_rule_on_transaction(doc):
 	if accumulated_discount_amount:
 		doc.set("additional_discount_percentage", 0)
 		doc.set("discount_amount", flt(accumulated_discount_amount))
+		if doc.get("apply_discount_on") == "Grand Total":
+			doc.set("discount_from_pricing_rule", 1)
 
 	for rule_name in applied_transaction_rules:
 		doc.append("pricing_rules", {
