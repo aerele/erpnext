@@ -148,8 +148,7 @@ class PricingRule(Document):
 					"Cannot disable Pricing Rule because it is used in the following draft transactions:<br><br>{0}"
 				).format("<br>".join(draft_docs))
 			)
-
-
+			
 	def validate_priority_conflict(self):
 		if not self.priority or not self.has_priority:
 			return
@@ -158,47 +157,46 @@ class PricingRule(Document):
 		apply_on_table = apply_on_dict.get(self.apply_on)
 
 		if apply_on_table:
-
 			items_in_this_rule = [d.get(apply_on_field) for d in self.get(apply_on_table)]
 
-			for item_value in items_in_this_rule:
-				# if there are other rules with same prority , conflict throw
-				conflicting_rules = frappe.db.sql("""
-					select pr.name
-					from `tabPricing Rule` pr
-					inner join `tab{child_doc}` child
-						on child.parent = pr.name
-					where pr.name != %(name)s
-						and pr.priority = %(priority)s
-						and pr.disable = 0
-						and pr.apply_on = %(apply_on)s
-						and pr.selling = %(selling)s
-						and pr.buying = %(buying)s
-						and child.{apply_on_field} = %(item_value)s
-				""".format(
-					child_doc=f"Pricing Rule {self.apply_on}",
-					apply_on_field=apply_on_field
-				), {
-					"name": self.name,
-					"priority": self.priority,
-					"apply_on": self.apply_on,
-					"selling": self.selling,
-					"buying": self.buying,
-					"item_value": item_value,
-				}, as_dict=1)
+			if not items_in_this_rule:
+				return
 
-				if conflicting_rules:
-					frappe.throw(
-						_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
-							self.priority,
-							self.apply_on,
-							frappe.bold(item_value),
-							frappe.bold(conflicting_rules[0].name)
-						)
+			conflicting_rules = frappe.db.sql("""
+				select pr.name, child.{apply_on_field}
+				from `tabPricing Rule` pr
+				inner join `tab{child_doc}` child
+					on child.parent = pr.name
+				where pr.name != %(name)s
+					and pr.priority = %(priority)s
+					and pr.disable = 0
+					and pr.apply_on = %(apply_on)s
+					and pr.selling = %(selling)s
+					and pr.buying = %(buying)s
+					and child.{apply_on_field} in %(item_values)s
+			""".format(
+				child_doc=f"Pricing Rule {self.apply_on}",
+				apply_on_field=apply_on_field
+			), {
+				"name": self.name,
+				"priority": self.priority,
+				"apply_on": self.apply_on,
+				"selling": self.selling,
+				"buying": self.buying,
+				"item_values": items_in_this_rule,
+			}, as_dict=1)
+
+			if conflicting_rules:
+				frappe.throw(
+					_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
+						self.priority,
+						self.apply_on,
+						frappe.bold(conflicting_rules[0].get(apply_on_field)),
+						frappe.bold(conflicting_rules[0].name)
 					)
+				)
 
 		else:
-			# if apply_on is Transaction, then check for all rules with same priority and transaction type
 			conflicting_rules = frappe.db.sql("""
 				select name from `tabPricing Rule`
 				where name != %(name)s
