@@ -218,6 +218,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		}
 
 		if (this.frm.fields_dict["items"]) {
+			this["before_items_remove"] = (doc, cdt, cdn) => {
+        this.removed_row = locals[cdt][cdn];
+    	};
 			this["items_remove"] = this.process_item_removal;
 		}
 
@@ -1808,10 +1811,21 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		}
 	}
 
-	process_item_removal() {
+	process_item_removal(doc, cdt, cdn) {
 		this.frm.trigger("calculate_taxes_and_totals");
 		this.frm.trigger("calculate_net_weight");
-		this.apply_pricing_rule(null, true);
+		const removed_row = this.removed_row;
+
+    if (removed_row && removed_row.is_free_item && removed_row.pricing_rules) {
+        frappe.db.get_value("Pricing Rule", removed_row.pricing_rules, "dont_enforce_free_item_qty")
+            .then(r => {
+                if (r.message.dont_enforce_free_item_qty !== 1) {
+                    this.apply_pricing_rule(null, true);
+                } 
+            });
+    } else {
+        this.apply_pricing_rule(null, true);
+    }
 	}
 
 	calculate_net_weight() {
