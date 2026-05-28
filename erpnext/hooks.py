@@ -383,6 +383,7 @@ doc_events = {
 			"erpnext.regional.italy.utils.sales_invoice_on_cancel",
 		],
 		"on_trash": "erpnext.regional.check_deletion_permission",
+    "validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
 	},
 	"Purchase Invoice": {
 		"validate": [
@@ -409,9 +410,16 @@ doc_events = {
 	"Integration Request": {
 		"validate": "erpnext.accounts.doctype.payment_request.payment_request.validate_payment"
 	},
-    ("Sales Order", "Sales Invoice", "Quotation", "POS Invoice"): {
-        "validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
-    },
+	"Sales Order": {
+    "validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
+	},
+	"Quotation": {
+		"validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
+	},
+	"POS Invoice": {
+		"validate": "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability",
+	},
+    
 }
 
 # function should expect the variable and doc as arguments
