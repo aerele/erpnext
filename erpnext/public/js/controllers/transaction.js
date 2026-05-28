@@ -1749,10 +1749,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 			frappe.run_serially([
 				() => this.remove_pricing_rule_for_item(item),
 				() => this.conversion_factor(doc, cdt, cdn, true),
-				// removed this.apply_price_list because it only checks for the current row whose qty is being modified and causes issues.
-				// () => this.apply_price_list(item, true), 
 				() => this.calculate_stock_uom_rate(doc, cdt, cdn),
-				// changed apply_pricing_rule(item,true) to (null,true) , to reapply pricing rule for all the items incase of mixed condition and group rule.
 				() => this.apply_pricing_rule(null, true),
 			]);
 		} else {
@@ -2195,7 +2192,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 						r.message.forEach((row_item) => {
 							me.remove_pricing_rule(row_item);
 						});
-						// added a flag below to , not to overwrite the item level discount by calling apply_rule_on_other_items
 						me._set_values_for_item_list(r.message,true);
 						me.calculate_taxes_and_totals();
 						if (me.frm.doc.apply_discount_on) me.frm.trigger("apply_discount_on");
@@ -2402,7 +2398,6 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 							child.apply_rule_on_other_items &&
 							JSON.parse(child.apply_rule_on_other_items).length
 						) {
-							// added code to compare item group with item group instead of item code (2 lines)
 							const apply_on = child.apply_rule_on || "item_code";
     						const item_value = frappe.get_doc(child.doctype, child.name)?.[apply_on];
 							if (!JSON.parse(child.apply_rule_on_other_items).includes(item_value)) {
