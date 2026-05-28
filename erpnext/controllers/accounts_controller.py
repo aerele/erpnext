@@ -1140,7 +1140,6 @@ class AccountsController(TransactionBase):
 			# if user changed the discount percentage then set user's discount percentage ?
 			if pricing_rule_args.get("price_or_product_discount") == "Price":
 				item.set("pricing_rules", pricing_rule_args.get("pricing_rules"))
-					#  added code to compare item group with item group instead of item code (2 lines)
 				if pricing_rule_args.get("apply_rule_on_other_items"):
 					other_items = json.loads(pricing_rule_args.get("apply_rule_on_other_items"))
 					if other_items:
