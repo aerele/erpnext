@@ -110,16 +110,14 @@ def get_pricing_rules(args, doc=None):
 		skipped_rules = [p for p in pricing_rules if not p.apply_multiple_pricing_rules]
 
 		# notifying the user
-		for skipped in skipped_rules:
+		if skipped_rules:
+			skipped_names = ", ".join(frappe.bold(s.name) for s in skipped_rules)
 			frappe.msgprint(
-				_("Pricing Rule {0} is being ignored because 'Apply Multiple Pricing Rules' is not checked, "
-				  "while other applicable rules have it checked.").format(
-					frappe.bold(skipped.name)
-				),
-				indicator="orange",
-				alert=True
-			)
-
+			_("The following Pricing Rules are being ignored because 'Apply Multiple Pricing Rules' "
+			  "is not checked, while other applicable rules have it checked: {0}").format(skipped_names),
+			indicator="orange",
+			alert=True
+		)
 		pricing_rules = sorted_by_priority(multiple_rules, args, doc)
 		for pricing_rule in pricing_rules:
 			if isinstance(pricing_rule, list):
@@ -771,11 +769,12 @@ def apply_pricing_rule_on_transaction(doc):
 		if has_multiple:
 			multiple_rules = [p for p in pricing_rules if p.get("apply_multiple_pricing_rules")]
 			skipped_rules = [p for p in pricing_rules if not p.get("apply_multiple_pricing_rules")]
-			for skipped in skipped_rules:
-				frappe.msgprint(
-					_("Pricing Rule {0} is being ignored because 'Apply Multiple Pricing Rules' is not checked, "
-					  "while other applicable rules have it checked.").format(frappe.bold(skipped.name)),
-					indicator="orange", alert=True
+			if skipped_rules:
+				skipped_names = ", ".join(frappe.bold(s.name) for s in skipped_rules)
+			frappe.msgprint(
+				_("The following Pricing Rules are being ignored because 'Apply Multiple Pricing Rules' "
+					"is not checked, while other applicable rules have it checked: {0}").format(skipped_names),
+				indicator="orange", alert=True
 				)
 			pricing_rules = sorted(multiple_rules, key=lambda x: cint(x.get("priority") or 0), reverse=True)
 		else:
@@ -840,7 +839,10 @@ def apply_pricing_rule_on_transaction(doc):
 			item_details = frappe._dict({"parenttype": doc.doctype, "free_item_data": []})
 			get_product_discount_rule(d, item_details, doc=doc)
 			apply_pricing_rule_for_free_items(doc, item_details.free_item_data)
-			doc.set_missing_values()
+			# Only recalculate taxes/totals after adding free item.
+			# Calling set_missing_values() here wipes self.pricing_rules = []
+			# and re-fetches item details, overwriting row-level discounts.
+			doc.calculate_taxes_and_totals()
 			applied_transaction_rules.append(d.name)
 
 	if accumulated_discount_amount:
@@ -887,11 +889,6 @@ def validate_coupon_applicability(doc,method = None):
 		)
 		doc.coupon_code = ""
 
-
-# def remove_free_item(doc):
-# 	for d in doc.items:
-# 		if d.is_free_item:
-# 			doc.remove(d)
 
 def remove_free_item(doc):
 	for item in doc.items[:]:
