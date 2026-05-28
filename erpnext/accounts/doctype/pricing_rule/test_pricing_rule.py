@@ -2677,6 +2677,100 @@ class TestPricingRule(IntegrationTestCase):
 
 		so2.delete()
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Perf Rule")
+
+	def test_row_level_discount_and_transaction_level_free_item(self):
+		"""
+		Row-level rule: 10% discount on item when qty between 60-100
+		Transaction-level rule: free product qty 5 when total qty >= 5
+		Both should apply on the same Sales Order.
+		"""
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Row Discount Rule")
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Txn Free Item Rule")
+
+		item = make_item("Discount Qty Item")
+		free_item = make_item("Free Product Item")
+
+		make_item_price(item.name, "_Test Price List", 100)
+
+		# Row-level: 10% discount when qty 60-100
+		frappe.get_doc({
+			"doctype": "Pricing Rule",
+			"title": "_Test Row Discount Rule",
+			"apply_on": "Item Code",
+			"items": [{"item_code": item.name}],
+			"selling": 1,
+			"currency": "INR",
+			"price_or_product_discount": "Price",
+			"rate_or_discount": "Discount Percentage",
+			"discount_percentage": 10,
+			"min_qty": 60,
+			"max_qty": 100,
+			"company": "_Test Company",
+			"has_priority": 1,
+			"priority": 10,
+		}).insert()
+
+		# Transaction-level: free product qty 5 when total qty >= 5
+		frappe.get_doc({
+			"doctype": "Pricing Rule",
+			"title": "_Test Txn Free Item Rule",
+			"apply_on": "Transaction",
+			"selling": 1,
+			"currency": "INR",
+			"price_or_product_discount": "Product",
+			"same_item": 0,
+			"free_item": free_item.name,
+			"free_qty": 5,
+			"min_qty": 5,
+			"company": "_Test Company",
+			"has_priority": 1,
+			"priority": 5,
+		}).insert()
+
+		so = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"items": [
+				{
+					"item_code": item.name,
+					"qty": 70,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				}
+			],
+		})
+		so.insert()
+		so.reload()
+
+		print("\nprice_list_rate:", so.items[0].price_list_rate)
+		print("qty:", so.items[0].qty)
+		print("discount_amount (row level):", so.items[0].discount_amount)
+		print("rate after row rule:", so.items[0].rate)
+		print("net_total:", so.net_total)
+		print("total items count:", len(so.items))
+
+		for i, item_row in enumerate(so.items):
+			print(f"item[{i}] code={item_row.item_code} qty={item_row.qty} is_free={item_row.is_free_item}")
+
+		# Row-level: 10% of 100 = 10 discount, rate = 90
+		self.assertEqual(so.items[0].discount_amount, 10)
+		self.assertEqual(so.items[0].rate, 90)
+
+		# Transaction-level: free item should be added
+		free_items = [row for row in so.items if row.is_free_item]
+		self.assertEqual(len(free_items), 1)
+		self.assertEqual(free_items[0].item_code, free_item.name)
+		self.assertEqual(free_items[0].qty, 5)
+
+		so.delete()
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Row Discount Rule")
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Txn Free Item Rule")
 # ________________________________________________________________________________________________________________________________________________________
 	def test_pricing_rule_for_product_free_item_rounded_qty_and_recursion(self):
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Pricing Rule")
