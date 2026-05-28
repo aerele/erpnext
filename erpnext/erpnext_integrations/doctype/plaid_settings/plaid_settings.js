@@ -11,6 +11,10 @@ frappe.ui.form.on("Plaid Settings", {
 	},
 
 	refresh: function (frm) {
+		if (!frm.doc.transactions_days_requested) {
+			frm.set_value("transactions_days_requested", 90);
+		}
+
 		if (frm.doc.enabled) {
 			frm.add_custom_button(__("Link a new bank account"), () => {
 				new erpnext.integrations.plaidLink(frm);
@@ -43,6 +47,12 @@ frappe.ui.form.on("Plaid Settings", {
 					},
 				});
 			}).addClass("btn-primary");
+		}
+	},
+
+	transactions_days_requested: function (frm) {
+		if (!frm.doc.transactions_days_requested) {
+			frm.set_value("transactions_days_requested", 90);
 		}
 	},
 });
