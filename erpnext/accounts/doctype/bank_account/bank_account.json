@@ -34,6 +34,7 @@
   "integration_details_section",
   "integration_id",
   "last_integration_date",
+  "plaid_sync_cursor",
   "column_break_27",
   "mask"
  ],
@@ -217,6 +218,14 @@
    "fieldname": "is_credit_card",
    "fieldtype": "Check",
    "label": "Is Credit Card"
+  },
+  {
+   "fieldname": "plaid_sync_cursor",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Plaid Sync Cursor",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
@@ -262,7 +271,7 @@
    "link_fieldname": "default_bank_account"
   }
  ],
- "modified": "2026-04-11 19:46:27.609994",
+ "modified": "2026-05-27 17:23:54.989447",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Bank Account",

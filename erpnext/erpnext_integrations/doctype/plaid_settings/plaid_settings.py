@@ -4,11 +4,11 @@
 import json
 
 import frappe
+import plaid
 from frappe import _
 from frappe.desk.doctype.tag.tag import add_tag
 from frappe.model.document import Document
-from frappe.utils import add_months, formatdate, getdate, sbool, today
-from plaid.errors import ItemError
+from frappe.utils import add_months, create_batch, formatdate, getdate, sbool, today
 
 from erpnext.erpnext_integrations.doctype.plaid_settings.plaid_connector import PlaidConnector
 
@@ -28,13 +28,20 @@ class PlaidSettings(Document):
 		plaid_client_id: DF.Data | None
 		plaid_env: DF.Literal["sandbox", "development", "production"]
 		plaid_secret: DF.Password | None
+		transactions_days_requested: DF.Int
 	# end: auto-generated types
+
+	def validate(self):
+		if not self.transactions_days_requested:
+			self.transactions_days_requested = 90
+		elif self.transactions_days_requested < 90 or self.transactions_days_requested > 730:
+			frappe.throw(_("Transaction History Days must be between 90 and 730."))
 
 	@staticmethod
 	@frappe.whitelist()
 	def get_link_token():
-		plaid = PlaidConnector()
-		return plaid.get_link_token()
+		plaid_connector = PlaidConnector()
+		return plaid_connector.get_link_token()
 
 
 @frappe.whitelist()
@@ -54,8 +61,8 @@ def get_plaid_configuration():
 def add_institution(token: str, response: str):
 	response = json.loads(response)
 
-	plaid = PlaidConnector()
-	access_token = plaid.get_access_token(token)
+	plaid_connector = PlaidConnector()
+	access_token = plaid_connector.get_access_token(token)
 	bank = None
 
 	if not frappe.db.exists("Bank", response["institution"]["name"]):
@@ -134,6 +141,7 @@ def add_bank_accounts(response: str | dict, bank: str | dict, company: str):
 						"account_subtype": account.get("subtype", ""),
 						"mask": account.get("mask", ""),
 						"integration_id": account["id"],
+						"plaid_sync_cursor": None,
 						"is_company_account": 1,
 						"company": company,
 					}
@@ -165,6 +173,7 @@ def add_bank_accounts(response: str | dict, bank: str | dict, company: str):
 						"account_subtype": account.get("subtype", ""),
 						"mask": account.get("mask", ""),
 						"integration_id": account["id"],
+						"plaid_sync_cursor": None,
 					}
 				)
 				existing_account.save()
@@ -206,14 +215,26 @@ def sync_transactions(bank, bank_account):
 	end_date = formatdate(today(), "YYYY-MM-dd")
 
 	try:
-		transactions = get_transactions(
-			bank=bank, bank_account=bank_account, start_date=start_date, end_date=end_date
-		)
+		updates = get_transactions(bank=bank, bank_account=bank_account)
+		transactions = updates.get("added", [])
 
 		result = []
 		if transactions:
 			for transaction in reversed(transactions):
 				result += new_bank_transaction(transaction)
+
+		if updates.get("next_cursor"):
+			frappe.db.set_value("Bank Account", bank_account, "plaid_sync_cursor", updates["next_cursor"])
+
+		if updates.get("modified"):
+			frappe.logger().info(
+				f"Plaid received {len(updates['modified'])} modified transactions for '{bank_account}'."
+			)
+
+		if updates.get("removed"):
+			frappe.logger().info(
+				f"Plaid received {len(updates['removed'])} removed transactions for '{bank_account}'."
+			)
 
 		if result:
 			last_transaction_date = frappe.db.get_value("Bank Transaction", result.pop(), "date")
@@ -227,31 +248,23 @@ def sync_transactions(bank, bank_account):
 		frappe.log_error(frappe.get_traceback(), _("Plaid transactions sync error"))
 
 
-def get_transactions(bank, bank_account=None, start_date=None, end_date=None):
-	access_token = None
-
+def get_transactions(bank, bank_account=None):
 	if bank_account:
 		related_bank = frappe.db.get_values(
-			"Bank Account", bank_account, ["bank", "integration_id"], as_dict=True
+			"Bank Account", bank_account, ["bank", "integration_id", "plaid_sync_cursor"], as_dict=True
 		)
-		access_token = frappe.db.get_value("Bank", related_bank[0].bank, "plaid_access_token")
-		account_id = related_bank[0].integration_id
+		bank_details = related_bank[0]
+		bank = bank_details.bank
+		account_id = bank_details.integration_id
+		cursor = bank_details.plaid_sync_cursor
 	else:
-		access_token = frappe.db.get_value("Bank", bank, "plaid_access_token")
 		account_id = None
+		cursor = None
 
-	plaid = PlaidConnector(access_token)
+	access_token = frappe.db.get_value("Bank", bank, "plaid_access_token")
 
-	transactions = []
-	try:
-		transactions = plaid.get_transactions(start_date=start_date, end_date=end_date, account_id=account_id)
-	except ItemError as e:
-		if e.code == "ITEM_LOGIN_REQUIRED":
-			msg = _("There was an error syncing transactions.") + " "
-			msg += _("Please refresh or reset the Plaid linking of the Bank {}.").format(bank) + " "
-			frappe.log_error(message=msg, title=_("Plaid Link Refresh Required"))
-
-	return transactions
+	plaid_connector = PlaidConnector(access_token)
+	return plaid_connector.get_transactions(cursor=cursor, account_id=account_id)
 
 
 def new_bank_transaction(transaction):
@@ -330,13 +343,16 @@ def enqueue_synchronization():
 			"erpnext.erpnext_integrations.doctype.plaid_settings.plaid_settings.sync_transactions",
 			bank=plaid_account.bank,
 			bank_account=plaid_account.name,
+			queue="long",
+			timeout=3600,
+			job_name=f"sync_plaid_transactions_{plaid_account.name}",
 		)
 
 
 @frappe.whitelist()
 def get_link_token_for_update(access_token: str):
-	plaid = PlaidConnector(access_token)
-	return plaid.get_link_token(update_mode=True)
+	plaid_connector = PlaidConnector(access_token)
+	return plaid_connector.get_link_token(update_mode=True)
 
 
 def get_company(bank_account_name):

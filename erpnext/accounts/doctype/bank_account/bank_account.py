@@ -41,6 +41,7 @@ class BankAccount(Document):
 		mask: DF.Data | None
 		party: DF.DynamicLink | None
 		party_type: DF.Link | None
+		plaid_sync_cursor: DF.LongText | None
 	# end: auto-generated types
 
 	def onload(self):
