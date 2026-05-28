@@ -2442,6 +2442,10 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 
 		// preventing values from changing once again
+		// apply_rule_on_other_items is skipped when called from apply_pricing_rule
+    // because the server has already handled cross-item rule application.
+    // Calling it again here would double-apply discounts on other items
+    // and cause recursive re-evaluation.
 		if (!from_pricing_rule) {
 			this.apply_rule_on_other_items(items_rule_dict);
 		}
