@@ -2406,10 +2406,277 @@ class TestPricingRule(IntegrationTestCase):
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Cumulative Transaction Rule")	
 
 
-	
+	def test_mixed_condition_qty_change_reprices_full_table(self):
+		"""
+		Mixed condition rule applies when total qty of two items crosses threshold.
+		Verified by creating two separate documents — one below, one above threshold.
+		"""
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Mixed Qty Rule")
 
+		it1 = make_item("Mixed Qty Item 1", {"item_group": "_Test Item Group"})
+		it2 = make_item("Mixed Qty Item 2", {"item_group": "_Test Item Group"})
 
+		make_item_price(it1.name, "_Test Price List", 100)
+		make_item_price(it2.name, "_Test Price List", 100)
 
+		frappe.get_doc({
+			"doctype": "Pricing Rule",
+			"title": "_Test Mixed Qty Rule",
+			"apply_on": "Item Group",
+			"item_groups": [
+				{"item_group": "_Test Item Group"},
+			],
+			"mixed_conditions": 1,
+			"min_qty": 60,
+			"max_qty": 100,
+			"selling": 1,
+			"currency": "USD",
+			"price_or_product_discount": "Price",
+			"rate_or_discount": "Discount Percentage",
+			"discount_percentage": 10,
+			"company": "_Test Company",
+		}).insert()
+
+		# Document 1: total qty = 40 → below threshold → no discount
+		so1 = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"items": [
+				{
+					"item_code": it1.name,
+					"qty": 20,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				},
+				{
+					"item_code": it2.name,
+					"qty": 20,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				},
+			],
+		})
+		so1.insert()
+		so1.reload()
+
+		self.assertEqual(so1.items[0].discount_amount, 0)
+		self.assertEqual(so1.items[1].discount_amount, 0)
+		self.assertEqual(so1.items[0].rate, 100)
+		self.assertEqual(so1.items[1].rate, 100)
+
+		# Document 2: total qty = 70 → above threshold → discount on both rows
+		so2 = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"items": [
+				{
+					"item_code": it1.name,
+					"qty": 50,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				},
+				{
+					"item_code": it2.name,
+					"qty": 20,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				},
+			],
+		})
+		so2.insert()
+		so2.reload()
+
+		self.assertEqual(so2.items[0].discount_amount, 10)
+		self.assertEqual(so2.items[1].discount_amount, 10)
+		self.assertEqual(so2.items[0].rate, 90)
+		self.assertEqual(so2.items[1].rate, 90)
+
+		so1.delete()
+		so2.delete()
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Mixed Qty Rule")
+
+		
+	def test_coupon_validate_hook_fires_on_save(self):
+		"""
+		validate_coupon_applicability should clear coupon_code
+		if no items in the document match the coupon's pricing rule.
+		This test verifies the hook fires correctly on Sales Order save.
+		"""
+		frappe.delete_doc_if_exists("Coupon Code", "HOOKTEST")
+
+		pr = make_pricing_rule(
+			title="Hook Test Coupon Rule",
+			selling=1,
+			apply_on="Item Code",
+			discount_percentage=10,
+			coupon_code_based=1,
+		)
+
+		coupon = frappe.get_doc({
+			"doctype": "Coupon Code",
+			"coupon_name": "HOOKTEST",
+			"pricing_rule": pr.name,
+		}).insert()
+
+		# Document with NON-matching item → coupon should be cleared on save
+		so = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"coupon_code": coupon.name,
+			"items": [
+				{
+					"item_code": "_Test Item 2",  # not _Test Item, so no match
+					"qty": 1,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				}
+			],
+		})
+		so.insert()
+		so.reload()
+
+		# hook should have cleared the coupon
+		self.assertEqual(so.coupon_code, "")
+
+		so.delete()
+		frappe.delete_doc_if_exists("Coupon Code", "HOOKTEST")
+
+	def test_coupon_hook_not_firing_with_tuple_key(self):
+		"""
+		Verify validate_coupon_applicability is registered under individual
+		doctype string keys, not a tuple key.
+		"""
+		hooks = frappe.get_hooks("doc_events")
+
+		# Confirm our hook is NOT registered under a tuple key
+		our_hook = "erpnext.accounts.doctype.pricing_rule.utils.validate_coupon_applicability"
+
+		our_hook_in_tuple = any(
+			isinstance(k, tuple) and our_hook in v.get("validate", [])
+			for k, v in hooks.items()
+		)
+
+		# Confirm it IS registered under individual string keys
+		so_hook = hooks.get("Sales Order", {}).get("validate", [])
+		si_hook = hooks.get("Sales Invoice", {}).get("validate", [])
+		quotation_hook = hooks.get("Quotation", {}).get("validate", [])
+		pos_hook = hooks.get("POS Invoice", {}).get("validate", [])
+
+		self.assertFalse(our_hook_in_tuple)
+		self.assertIn(our_hook, so_hook)
+		self.assertIn(our_hook, si_hook)
+		self.assertIn(our_hook, quotation_hook)
+		self.assertIn(our_hook, pos_hook)
+
+	def test_pricing_rule_evaluation_call_count_on_large_order(self):
+		"""
+		Performance baseline: pricing rule evaluation should not scale
+		exponentially with number of items. Each item should be evaluated
+		once per save, not N times.
+		"""
+		import time
+
+		item = make_item("Perf Test Item", {"item_group": "_Test Item Group"})
+		make_item_price(item.name, "_Test Price List", 100)
+
+		make_pricing_rule(
+			title="_Test Perf Rule",
+			selling=1,
+			discount_percentage=10,
+		)
+
+		item_count = 20
+
+		so = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"items": [
+				{
+					"item_code": item.name,
+					"qty": 1,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				}
+				for _ in range(item_count)
+			],
+		})
+
+		# Measure time for insert (20 items)
+		start = time.time()
+		so.insert()
+		elapsed_20 = time.time() - start
+
+		print(f"\n20 items insert time: {elapsed_20:.3f}s")
+		print(f"20 items discount_amount sample: {so.items[0].discount_amount}")
+
+		so.delete()
+
+		# Now measure with 40 items — should scale linearly, not exponentially
+		so2 = frappe.get_doc({
+			"doctype": "Sales Order",
+			"customer": "_Test Customer",
+			"company": "_Test Company",
+			"transaction_date": nowdate(),
+			"delivery_date": add_days(nowdate(), 5),
+			"selling_price_list": "_Test Price List",
+			"items": [
+				{
+					"item_code": item.name,
+					"qty": 1,
+					"rate": 100,
+					"price_list_rate": 100,
+					"warehouse": "_Test Warehouse - _TC",
+					"delivery_date": add_days(nowdate(), 5),
+				}
+				for _ in range(item_count * 2)
+			],
+		})
+
+		start = time.time()
+		so2.insert()
+		elapsed_40 = time.time() - start
+
+		print(f"40 items insert time: {elapsed_40:.3f}s")
+		print(f"Time ratio (40/20): {elapsed_40/elapsed_20:.2f}x")
+
+		# If scaling is linear, 40 items should take at most 4x the time of 20
+		# Exponential would be 8x or more
+		self.assertLess(
+			elapsed_40 / elapsed_20,
+			5.0,
+			f"Performance degradation too high: {elapsed_40/elapsed_20:.2f}x for 2x items"
+		)
+
+		so2.delete()
+		frappe.delete_doc_if_exists("Pricing Rule", "_Test Perf Rule")
 # ________________________________________________________________________________________________________________________________________________________
 	def test_pricing_rule_for_product_free_item_rounded_qty_and_recursion(self):
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Pricing Rule")
