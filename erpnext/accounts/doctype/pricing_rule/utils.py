@@ -565,13 +565,10 @@ def get_qty_and_rate_for_mixed_conditions(doc, pr_doc, args):
 
 		if pr_doc.is_cumulative:
 			data = get_qty_amount_data_for_cumulative(pr_doc, doc, items)
-
 			if data and data[0]:
 				sum_qty += data[0]
 				sum_amt += data[1]
-
 	return sum_qty, sum_amt, items
-
 
 def get_qty_and_rate_for_other_item(doc, pr_doc, pricing_rules, row_item):
 	other_items = get_pricing_rule_items(pr_doc, other_items=True)
@@ -745,8 +742,16 @@ def apply_pricing_rule_on_transaction(doc):
 		if not pricing_rules:
 			return
 
-	base_qty = flt(doc.total_qty)
-	base_amount = flt(doc.total)
+	base_qty = sum(
+    flt(item.get("qty"))
+    for item in doc.get("items") or []
+    if not item.get("is_free_item")
+	)
+	base_amount = sum(
+		flt(item.get("amount"))
+		for item in doc.get("items") or []
+		if not item.get("is_free_item")
+	)
 
 	filtered = []
 	for pr in pricing_rules:
@@ -760,7 +765,6 @@ def apply_pricing_rule_on_transaction(doc):
 				amount += flt(data[1])
 		if filter_pricing_rules_for_qty_amount(qty, amount, [pr]):
 			filtered.append(pr)
-
 	pricing_rules = filtered
 	pricing_rules = filter_pricing_rule_based_on_condition(pricing_rules, doc)
 
@@ -771,11 +775,11 @@ def apply_pricing_rule_on_transaction(doc):
 			skipped_rules = [p for p in pricing_rules if not p.get("apply_multiple_pricing_rules")]
 			if skipped_rules:
 				skipped_names = ", ".join(frappe.bold(s.name) for s in skipped_rules)
-			frappe.msgprint(
-				_("The following Pricing Rules are being ignored because 'Apply Multiple Pricing Rules' "
-					"is not checked, while other applicable rules have it checked: {0}").format(skipped_names),
-				indicator="orange", alert=True
-				)
+				frappe.msgprint(
+					_("The following Pricing Rules are being ignored because 'Apply Multiple Pricing Rules' "
+						"is not checked, while other applicable rules have it checked: {0}").format(skipped_names),
+					indicator="orange", alert=True
+					)
 			pricing_rules = sorted(multiple_rules, key=lambda x: cint(x.get("priority") or 0), reverse=True)
 		else:
 			pricing_rules = [max(pricing_rules, key=lambda x: cint(x.get("priority") or 0))]
@@ -834,6 +838,7 @@ def apply_pricing_rule_on_transaction(doc):
 					accumulated_discount_amount += flt(d.discount_amount)
 
 			applied_transaction_rules.append(d.name)
+
 
 		elif d.price_or_product_discount == "Product":
 			item_details = frappe._dict({"parenttype": doc.doctype, "free_item_data": []})
@@ -1028,10 +1033,19 @@ def apply_pricing_rule_for_free_items(doc, pricing_rule_args):
 				args.pop((item.item_code, item.pricing_rules))
 
 		for free_item in args.values():
-			if doc.is_new() or not frappe.db.get_value(
-				"Pricing Rule", free_item["pricing_rules"], "dont_enforce_free_item_qty"
-			):
-				# waittt
+			dont_enforce = frappe.db.get_value(
+        "Pricing Rule", free_item["pricing_rules"], "dont_enforce_free_item_qty"
+    	)
+			previously_saved = frappe.db.exists(
+        doc.doctype + " Item",
+        {
+            "parent": doc.name,
+            "item_code": free_item["item_code"],
+            "pricing_rules": free_item["pricing_rules"],
+            "is_free_item": 1,
+        }
+    	)	
+			if doc.is_new() or not dont_enforce or (dont_enforce and not previously_saved):
 				if doc.items:
 					item = doc.items[0]
 
