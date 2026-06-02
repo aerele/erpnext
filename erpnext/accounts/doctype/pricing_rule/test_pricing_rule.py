@@ -2316,17 +2316,12 @@ class TestPricingRule(IntegrationTestCase):
 				}
 			],
 		})
-
 		so2.insert()
-
 		self.assertEqual(so2.items[0].discount_amount, 20)
 		self.assertEqual(so2.items[0].rate, 80)
-
 		so1.cancel()
 		so1.delete()
-
 		so2.delete()
-
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Cumulative Rule")
 
 
@@ -2399,12 +2394,11 @@ class TestPricingRule(IntegrationTestCase):
 		})
 		so2.insert()
 		so2.reload()
-		self.assertEqual(so2.net_total, 480)	
+		self.assertEqual(so2.grand_total, 480)	
 		so1.cancel()
 		so1.delete()
 		so2.delete()
 		frappe.delete_doc_if_exists("Pricing Rule", "_Test Cumulative Transaction Rule")	
-
 
 	def test_mixed_condition_qty_change_reprices_full_table(self):
 		"""
