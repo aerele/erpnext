@@ -108,51 +108,53 @@ class PricingRule(Document):
 		self.validate_condition()
 		self.validate_mixed_with_recursion()
 		self.validate_priority_conflict()
-		self.validate_draft_transactions_before_disable()
+		self.validate_draft_transactions_before_edit()
 
 		if not self.margin_type:
 			self.margin_rate_or_amount = 0.0
 
-	def validate_draft_transactions_before_disable(self):
-		if not (self.has_value_changed("disable") and self.disable):
+	def validate_draft_transactions_before_edit(self):
+		if self.is_new():
 			return
 
 		doctypes = [
-			("Sales Order", "Sales Order Item"),
-			("Quotation", "Quotation Item"),
-			("Purchase Order", "Purchase Order Item"),
-			("Sales Invoice", "Sales Invoice Item"),
-			("Purchase Invoice", "Purchase Invoice Item"),
+			"Sales Order",
+			"Quotation",
+			"Purchase Order",
+			"Sales Invoice",
+			"Purchase Invoice",
 		]
 
 		draft_docs = []
 
-		for parent_dt, child_dt in doctypes:
+		for doctype in doctypes:
 			records = frappe.get_all(
-				child_dt,
+				"Pricing Rule Detail",
 				filters={
 					"docstatus": 0,
-					"pricing_rules": ["like", f"%{self.name}%"],
+					"pricing_rule": self.name,
+					"parenttype": doctype,
 				},
 				fields=["parent"],
 				distinct=True,
 			)
 
 			for row in records:
-				if self.name in frappe.parse_json(row.pricing_rules or "[]"):
-						draft_docs.append(f"{parent_dt}: {row.parent}")
+				draft_docs.append(f"{doctype}: {row.parent}")
 
 		if draft_docs:
 			frappe.throw(
 				_(
-					"Cannot disable Pricing Rule because it is used in the following draft transactions:<br><br>{0}"
-				).format("<br>".join(draft_docs))
+					"Cannot modify Pricing Rule <b>{0}</b> because it is used in the following draft transactions:<br><br>{1}<br><br>Please submit or cancel these transactions before editing the Pricing Rule."
+				).format(
+					self.name,
+					"<br>".join(draft_docs),
+				)
 			)
-			
+		
 	def validate_priority_conflict(self):
 		if not self.priority or not self.has_priority:
 			return
-
 		apply_on_field = frappe.scrub(self.apply_on)
 		apply_on_table = apply_on_dict.get(self.apply_on)
 
@@ -195,7 +197,6 @@ class PricingRule(Document):
 						frappe.bold(conflicting_rules[0].name)
 					)
 				)
-
 		else:
 			conflicting_rules = frappe.db.sql("""
 				select name from `tabPricing Rule`
@@ -236,7 +237,6 @@ class PricingRule(Document):
 			throw(_("As the field {0} is enabled, the field {1} is mandatory.").format(
 				frappe.bold(_("Apply Multiple Pricing Rules")), frappe.bold(_("Priority"))
 			))
-
 
 		if self.has_priority and not self.priority:
 			throw(_("Priority is mandatory"), frappe.MandatoryError, _("Please Set Priority"))
