@@ -2363,7 +2363,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
     const pricing_rules = this.frm.doc.pricing_rules || [];
 
     const has_row_level = items.some(d => d.pricing_rules && !d.is_free_item);
-    const has_transaction_level = pricing_rules.length > 0;
+		const has_transaction_level = pricing_rules.some(
+        pr => pr.rule_applied && !pr.child_docname
+    );
 
     let msg = "";
     if (has_row_level && has_transaction_level) {
@@ -2377,7 +2379,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
     if (msg) {
         frappe.show_alert({ message: msg, indicator: "green" }, 5);
     }
-}
+	}
 
 	_set_values_for_item_list(children,from_pricing_rule=false) {
 
