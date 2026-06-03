@@ -1812,6 +1812,7 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 		this.frm.trigger("calculate_taxes_and_totals");
 		this.frm.trigger("calculate_net_weight");
 		const removed_row = this.removed_row;
+		this.removed_row = null;
 
     if (removed_row && removed_row.is_free_item && removed_row.pricing_rules) {
         frappe.db.get_value("Pricing Rule", removed_row.pricing_rules, "dont_enforce_free_item_qty")
