@@ -412,11 +412,7 @@ def get_context(customer, doc):
 	del template_doc.customers
 	template_doc.from_date = format_date(template_doc.from_date)
 	template_doc.to_date = format_date(template_doc.to_date)
-	return {
-		"doc": template_doc,
-		"customer": frappe.get_doc("Customer", customer),
-		"frappe": frappe.utils,
-	}
+	return {"doc": template_doc, "customer": frappe.get_doc("Customer", customer)}
 
 
 @frappe.whitelist()
