@@ -123,7 +123,7 @@ class PricingRule(Document):
 			"Purchase Order",
 			"Sales Invoice",
 			"Purchase Invoice",
-		]
+		]	
 
 		draft_docs = []
 
@@ -146,7 +146,7 @@ class PricingRule(Document):
 			frappe.throw(
 				_(
 					"Cannot modify Pricing Rule <b>{0}</b> because it is used in the following draft transactions:<br><br>{1}<br><br>Please submit or cancel these transactions before editing the Pricing Rule."
-				).format(
+				).format( 
 					self.name,
 					"<br>".join(draft_docs),
 				)
@@ -163,31 +163,24 @@ class PricingRule(Document):
 
 			if not items_in_this_rule:
 				return
+			PricingRule = frappe.qb.DocType("Pricing Rule")
+			child_doctype = f"Pricing Rule {self.apply_on}"
+			Child = frappe.qb.DocType(child_doctype)
 
-			conflicting_rules = frappe.db.sql("""
-				select pr.name, child.{apply_on_field}
-				from `tabPricing Rule` pr
-				inner join `tab{child_doc}` child
-					on child.parent = pr.name
-				where pr.name != %(name)s
-					and pr.priority = %(priority)s
-					and pr.disable = 0
-					and pr.apply_on = %(apply_on)s
-					and pr.selling = %(selling)s
-					and pr.buying = %(buying)s
-					and child.{apply_on_field} in %(item_values)s
-			""".format(
-				child_doc=f"Pricing Rule {self.apply_on}",
-				apply_on_field=apply_on_field
-			), {
-				"name": self.name,
-				"priority": self.priority,
-				"apply_on": self.apply_on,
-				"selling": self.selling,
-				"buying": self.buying,
-				"item_values": items_in_this_rule,
-			}, as_dict=1)
-
+			conflicting_rules = (
+				frappe.qb.from_(PricingRule) 
+				.inner_join(Child)
+				.on(Child.parent == PricingRule.name)
+				.select(PricingRule.name, Child[apply_on_field])
+				.where(PricingRule.name != self.name)
+				.where(PricingRule.priority == self.priority)
+				.where(PricingRule.disable == 0)
+				.where(PricingRule.apply_on == self.apply_on)
+				.where(PricingRule.selling == self.selling)
+				.where(PricingRule.buying == self.buying)
+				.where(Child[apply_on_field].isin(items_in_this_rule))
+				.run(as_dict=True)
+			)
 			if conflicting_rules:
 				frappe.throw(
 					_("Priority {0} is already set for {1} {2} in Pricing Rule {3}. No two Pricing Rules should have the same priority for the same item.").format(
@@ -198,20 +191,18 @@ class PricingRule(Document):
 					)
 				)
 		else:
-			conflicting_rules = frappe.db.sql("""
-				select name from `tabPricing Rule`
-				where name != %(name)s
-					and priority = %(priority)s
-					and disable = 0
-					and apply_on = 'Transaction'
-					and selling = %(selling)s
-					and buying = %(buying)s
-			""", {
-				"name": self.name,
-				"priority": self.priority,
-				"selling": self.selling,
-				"buying": self.buying,
-			}, as_dict=1)
+			PricingRule = frappe.qb.DocType("Pricing Rule")
+			conflicting_rules = (
+				frappe.qb.from_(PricingRule)
+				.select(PricingRule.name)
+				.where(PricingRule.name != self.name)
+				.where(PricingRule.priority == self.priority)
+				.where(PricingRule.disable == 0)
+				.where(PricingRule.apply_on == "Transaction")
+				.where(PricingRule.selling == self.selling)
+				.where(PricingRule.buying == self.buying)
+				.run(as_dict=True)
+			)
 
 			if conflicting_rules:
 				frappe.throw(
