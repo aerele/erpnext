@@ -456,9 +456,6 @@ def make_quotation(source_name, target_doc=None):
 	)
 
 	target_doc.quotation_to = "Customer"
-	target_doc.run_method("set_missing_values")
-	target_doc.run_method("set_other_charges")
-	target_doc.run_method("calculate_taxes_and_totals")
 
 	price_list, currency = frappe.db.get_value(
 		"Customer", {"name": source_name}, ["default_price_list", "default_currency"]
@@ -467,6 +464,9 @@ def make_quotation(source_name, target_doc=None):
 		target_doc.selling_price_list = price_list
 	if currency:
 		target_doc.currency = currency
+	target_doc.run_method("set_missing_values")
+	target_doc.run_method("set_other_charges")
+	target_doc.run_method("calculate_taxes_and_totals")
 
 	return target_doc
 
