@@ -275,6 +275,17 @@ frappe.ui.form.on("Payment Entry", {
 		frm.events.set_dynamic_labels(frm);
 		erpnext.accounts.dimensions.update_dimension(frm, frm.doctype);
 		erpnext.utils.set_letter_head(frm);
+		frappe.call({
+			method: "erpnext.accounts.doctype.bank_account.bank_account.get_default_company_bank_account",
+			args: {
+				company: frm.doc.company,
+			},
+			callback: function (r) {
+				if (r.message) {
+					frm.set_value("bank_account", r.message);
+				}
+			},
+		});
 	},
 
 	contact_person: function (frm) {
@@ -562,9 +573,6 @@ frappe.ui.form.on("Payment Entry", {
 								frm.set_party_account_based_on_party = false;
 								if (r.message.party_bank_account) {
 									frm.set_value("party_bank_account", r.message.party_bank_account);
-								}
-								if (r.message.bank_account) {
-									frm.set_value("bank_account", r.message.bank_account);
 								}
 							},
 							() =>

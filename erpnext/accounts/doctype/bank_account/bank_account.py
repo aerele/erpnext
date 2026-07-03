@@ -107,18 +107,31 @@ def get_party_bank_account(party_type, party):
 	)
 
 
-def get_default_company_bank_account(company, party_type, party):
-	default_company_bank_account = frappe.db.get_value(party_type, party, "default_bank_account")
-	if default_company_bank_account:
-		if company != frappe.get_cached_value("Bank Account", default_company_bank_account, "company"):
-			default_company_bank_account = None
+@frappe.whitelist()
+def get_default_company_bank_account(
+	company: str | None = None,
+	party_type: str | None = None,
+	party: str | None = None,
+):
+	if not company:
+		return None
 
-	if not default_company_bank_account:
-		default_company_bank_account = frappe.db.get_value(
-			"Bank Account", {"company": company, "is_company_account": 1, "is_default": 1}
-		)
+	if party_type and party:
+		bank_account = frappe.db.get_value(party_type, party, "default_bank_account")
 
-	return default_company_bank_account
+		if bank_account:
+			account_company = frappe.get_cached_value("Bank Account", bank_account, "company")
+			if account_company == company:
+				return bank_account
+
+	return frappe.db.get_value(
+		"Bank Account",
+		{
+			"company": company,
+			"is_company_account": 1,
+			"is_default": 1,
+		},
+	)
 
 
 @frappe.whitelist()

@@ -2418,7 +2418,6 @@ def get_negative_outstanding_invoices(
 
 @frappe.whitelist()
 def get_party_details(company: str, party_type: str, party: str, date: str, cost_center: str | None = None):
-	bank_account = ""
 	party_bank_account = ""
 
 	if not frappe.db.exists(party_type, party):
@@ -2431,14 +2430,12 @@ def get_party_details(company: str, party_type: str, party: str, date: str, cost
 
 	if party_type in ["Customer", "Supplier"]:
 		party_bank_account = get_party_bank_account(party_type, party)
-		bank_account = get_default_company_bank_account(company, party_type, party)
 
 	return {
 		"party_account": party_account,
 		"party_name": party_name,
 		"party_account_currency": account_currency,
 		"party_bank_account": party_bank_account,
-		"bank_account": bank_account,
 	}
 
 
