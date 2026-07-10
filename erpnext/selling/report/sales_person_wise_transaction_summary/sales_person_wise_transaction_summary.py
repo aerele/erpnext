@@ -5,6 +5,8 @@
 import frappe
 from frappe import _, msgprint, qb
 from frappe.query_builder import Case, Criterion
+from frappe.desk.reportview import build_match_conditions
+from pypika.terms import LiteralValue
 
 from erpnext import get_company_currency
 
@@ -183,8 +185,22 @@ def get_entries(filters):
 		.as_("contribution_amt")
 	)
 
+	# Only pass valid document-field filters to get_query; report-specific keys such as
+	# doc_type / sales_person / item_group are handled separately below.
+	doc_filters = {"docstatus": 1}
+	for field in ["company", "customer", "territory"]:
+		if filters.get(field):
+			doc_filters[field] = filters.get(field)
+
+	if filters.get("from_date") and filters.get("to_date"):
+		doc_filters[date_field] = ["between", [filters.get("from_date"), filters.get("to_date")]]
+	elif filters.get("from_date"):
+		doc_filters[date_field] = [">=", filters.get("from_date")]
+	elif filters.get("to_date"):
+		doc_filters[date_field] = ["<=", filters.get("to_date")]
+
 	query = (
-		frappe.get_query(dt, filters=filters, ignore_permissions=False)
+		frappe.get_query(dt, filters=doc_filters)
 		.join(dt_item)
 		.on(dt.name == dt_item.parent)
 		.join(st)
@@ -203,46 +219,32 @@ def get_entries(filters):
 			contribution_amt_case,
 		)
 		.where(st.parenttype == doc_type)
-		.where(dt.docstatus == 1)
 	)
+
+	if filters.get("sales_person"):
+		lft, rgt = frappe.db.get_value("Sales Person", filters.get("sales_person"), ["lft", "rgt"])
+		sp = frappe.qb.DocType("Sales Person")
+		query = query.where(
+			st.sales_person.isin(frappe.qb.from_(sp).select(sp.name).where((sp.lft >= lft) & (sp.rgt <= rgt)))
+		)
+
+	# only resolve items when an item_group/brand filter is set; otherwise get_items
+	# would return every item in the system and add a huge IN() clause on each run
+	if filters.get("item_group") or filters.get("brand"):
+		items = get_items(filters)
+		if not items:
+			# the item_group/brand filter matched nothing -> no rows
+			return []
+		query = query.where(dt_item.item_code.isin([d[0] for d in items]))
 
 	query = query.orderby(st.sales_person).orderby(dt.name, order=frappe.qb.desc)
 
+	# Apply user permissions (v15: ignore_permissions is not available)
+	match_conditions = build_match_conditions(doc_type)
+	if match_conditions:
+		query = query.where(LiteralValue(match_conditions))
+
 	return query.run(as_dict=True)
-
-
-def get_conditions(filters, date_field):
-	conditions = [""]
-	values = []
-
-	for field in ["company", "customer", "territory"]:
-		if filters.get(field):
-			conditions.append(f"dt.{field}=%s")
-			values.append(filters[field])
-
-	if filters.get("sales_person"):
-		lft, rgt = frappe.get_value("Sales Person", filters.get("sales_person"), ["lft", "rgt"])
-		conditions.append(
-			f"exists(select name from `tabSales Person` where lft >= {lft} and rgt <= {rgt} and name=st.sales_person)"
-		)
-
-	if filters.get("from_date"):
-		conditions.append(f"dt.{date_field}>=%s")
-		values.append(filters["from_date"])
-
-	if filters.get("to_date"):
-		conditions.append(f"dt.{date_field}<=%s")
-		values.append(filters["to_date"])
-
-	items = get_items(filters)
-	if items:
-		conditions.append("dt_item.item_code in (%s)" % ", ".join(["%s"] * len(items)))
-		values += items
-	else:
-		# return empty result, if no items are fetched after filtering on 'item group' and 'brand'
-		conditions.append("dt_item.item_code = Null")
-
-	return " and ".join(conditions), values
 
 
 def get_items(filters):
@@ -269,8 +271,5 @@ def get_items(filters):
 
 
 def get_item_details():
-	item_details = {}
-	for d in frappe.db.sql("""SELECT `name`, `item_group`, `brand` FROM `tabItem`""", as_dict=1):
-		item_details.setdefault(d.name, d)
-
-	return item_details
+	items = frappe.get_all("Item", fields=["name", "item_group", "brand"])
+	return {d.name: d for d in items}
