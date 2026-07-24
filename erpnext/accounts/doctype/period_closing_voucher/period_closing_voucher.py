@@ -172,6 +172,7 @@ class PeriodClosingVoucher(AccountsController):
 			frappe.enqueue(
 				process_gl_and_closing_entries,
 				doc=self,
+				in_background=True,
 				timeout=1800,
 			)
 			frappe.msgprint(
@@ -444,6 +445,7 @@ class PeriodClosingVoucher(AccountsController):
 				process_cancellation,
 				voucher_type="Period Closing Voucher",
 				voucher_no=self.name,
+				in_background=True,
 				queue="long",
 				enqueue_after_commit=True,
 			)
@@ -461,7 +463,7 @@ class PeriodClosingVoucher(AccountsController):
 		)
 
 
-def process_gl_and_closing_entries(doc):
+def process_gl_and_closing_entries(doc, in_background=False):
 	from erpnext.accounts.general_ledger import make_gl_entries
 
 	try:
@@ -474,6 +476,8 @@ def process_gl_and_closing_entries(doc):
 
 		frappe.db.set_value(doc.doctype, doc.name, "gle_processing_status", "Completed")
 	except Exception as e:
+		if not in_background:
+			raise
 		frappe.db.rollback()
 		frappe.log_error(title=_("Period Closing Voucher {0} GL Entry Processing Failed").format(doc.name))
 		frappe.db.set_value(
@@ -486,7 +490,7 @@ def process_gl_and_closing_entries(doc):
 		)
 
 
-def process_cancellation(voucher_type, voucher_no):
+def process_cancellation(voucher_type, voucher_no, in_background=False):
 	from erpnext.accounts.general_ledger import make_reverse_gl_entries
 
 	try:
@@ -494,6 +498,8 @@ def process_cancellation(voucher_type, voucher_no):
 		delete_closing_entries(voucher_no)
 		frappe.db.set_value("Period Closing Voucher", voucher_no, "gle_processing_status", "Completed")
 	except Exception as e:
+		if not in_background:
+			raise
 		frappe.db.rollback()
 		frappe.log_error(
 			title=_("Period Closing Voucher {0} GL Entry Cancellation Failed").format(voucher_no)
