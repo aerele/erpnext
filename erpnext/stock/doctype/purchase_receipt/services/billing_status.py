@@ -178,9 +178,16 @@ def update_billing_percentage(
 		"Accounts Settings", ["over_billing_allowance", "role_allowed_to_over_bill"]
 	)
 
-	total_amount, total_billed_amount, pi_landed_cost_amount = 0, 0, 0
+	# The Purchase Invoice rate is meant to differ from the receipt rate when landed cost is set
+	# from it, so a matching billed amount says nothing about how much is left to invoice. Track
+	# billing completion on qty instead.
+	bill_by_qty = bool(buying_settings.set_landed_cost_based_on_purchase_invoice_rate)
+
+	total_amount, total_billed_amount = 0, 0
+	total_qty, total_billed_qty = 0, 0
 	item_wise_returned_qty = get_item_wise_returned_qty(pr_doc)
 	billed_qty_amt = frappe._dict()
+	item_wise_billed_qty = get_item_wise_billed_qty(pr_doc) if bill_by_qty else {}
 
 	if adjust_incoming_rate:
 		billed_qty_amt = get_billed_qty_amount_against_purchase_receipt(pr_doc)
@@ -202,6 +209,29 @@ def update_billing_percentage(
 
 		if pr_doc.get("is_return") and not total_amount and total_billed_amount:
 			total_amount = total_billed_amount
+
+		if bill_by_qty:
+			receipt_qty = abs(
+				flt(
+					item.received_qty
+					if buying_settings.bill_for_rejected_quantity_in_purchase_invoice
+					else item.qty
+				)
+			)
+			billed_qty = abs(flt(item_wise_billed_qty.get(item.name)))
+			pending_qty = receipt_qty
+			if not buying_settings.bill_for_rejected_quantity_in_purchase_invoice:
+				pending_qty -= returned_qty
+
+			total_billable_qty = receipt_qty
+			if pending_qty > 0:
+				total_billable_qty = pending_qty if billed_qty <= pending_qty else billed_qty
+
+			total_qty += total_billable_qty
+			total_billed_qty += billed_qty
+
+			if pr_doc.get("is_return") and not total_qty and total_billed_qty:
+				total_qty = total_billed_qty
 
 		amount = item.amount
 		if frappe.db.get_single_value("Buying Settings", "bill_for_rejected_quantity_in_purchase_invoice"):
@@ -233,14 +263,12 @@ def update_billing_percentage(
 				if billed_qty_amt.get(item.name):
 					billed_amt = flt(billed_qty_amt.get(item.name).get("amount"))
 				elif billed_qty_amt_based_on_po.get(item.purchase_order_item):
-					total_billed_qty = (
-						billed_qty_amt_based_on_po.get(item.purchase_order_item).get("qty") + qty
-					)
+					po_billed_qty = billed_qty_amt_based_on_po.get(item.purchase_order_item).get("qty") + qty
 
-					if total_billed_qty:
+					if po_billed_qty:
 						billed_amt = flt(
 							flt(billed_qty_amt_based_on_po.get(item.purchase_order_item).get("amount"))
-							* (qty / total_billed_qty)
+							* (qty / po_billed_qty)
 						)
 					else:
 						billed_amt = 0.0
@@ -254,7 +282,6 @@ def update_billing_percentage(
 					) * item.qty
 
 			adjusted_amt = flt(adjusted_amt, item.precision("amount"))
-			pi_landed_cost_amount += adjusted_amt
 			item.db_set("amount_difference_with_purchase_invoice", adjusted_amt, update_modified=False)
 		elif amount and item.billed_amt > amount:
 			per_over_billed = (flt(item.billed_amt / amount, 2) * 100) - 100
@@ -268,10 +295,11 @@ def update_billing_percentage(
 					)
 				)
 
-	if pi_landed_cost_amount < 0:
-		total_billed_amount += abs(pi_landed_cost_amount)
+	if bill_by_qty:
+		percent_billed = round(100 * (total_billed_qty / (total_qty or 1)), 6)
+	else:
+		percent_billed = round(100 * (total_billed_amount / (total_amount or 1)), 6)
 
-	percent_billed = round(100 * (total_billed_amount / (total_amount or 1)), 6)
 	pr_doc.db_set("per_billed", percent_billed)
 
 	if update_modified:
@@ -280,6 +308,33 @@ def update_billing_percentage(
 
 	if adjust_incoming_rate:
 		adjust_incoming_rate_for_pr(pr_doc)
+
+
+def get_item_wise_billed_qty(pr_doc) -> dict:
+	"""Qty invoiced against each Purchase Receipt Item.
+
+	A Purchase Invoice either points at the receipt row (pr_detail) or, when it was raised
+	straight against the order, only at the order row (po_detail). Qty billed against the order
+	is handed out to the receipt rows in the order they appear, the same way billed_amt is.
+	"""
+	billed_qty_against_pr = get_billed_qty_amount_against_purchase_receipt(pr_doc)
+	billed_qty_against_po = get_billed_qty_amount_against_purchase_order(pr_doc)
+
+	item_wise_billed_qty = {}
+	for item in pr_doc.items:
+		if item.get("purchase_invoice") and item.get("purchase_invoice_item"):
+			# Receipt was made from the invoice, so the whole row is already billed
+			item_wise_billed_qty[item.name] = flt(item.qty)
+		elif against_pr := billed_qty_against_pr.get(item.name):
+			item_wise_billed_qty[item.name] = flt(against_pr.get("qty"))
+		elif against_po := billed_qty_against_po.get(item.purchase_order_item):
+			qty = min(abs(flt(item.qty)), flt(against_po.get("qty")))
+			against_po["qty"] -= qty
+			item_wise_billed_qty[item.name] = qty
+		else:
+			item_wise_billed_qty[item.name] = 0.0
+
+	return item_wise_billed_qty
 
 
 def get_billed_qty_amount_against_purchase_receipt(pr_doc) -> dict:
