@@ -6161,6 +6161,65 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		self.assertEqual(frappe.db.count("Stock Ledger Entry", {"voucher_no": pr.name}), sle_before)
 		self.assertEqual(frappe.db.count("GL Entry", {"voucher_no": pr.name}), gle_before)
 
+	@ERPNextTestSuite.change_settings(
+		"Buying Settings", {"set_landed_cost_based_on_purchase_invoice_rate": 1, "maintain_same_rate": 0}
+	)
+	def test_per_billed_counts_qty_when_landed_cost_is_set_from_invoice_rate(self):
+		"""Invoicing a quarter of the qty at four times the rate covers the receipt amount exactly.
+
+		The receipt is not billed though - 75 units are still to be invoiced - so it must not read
+		as Completed, which is what hides the Create > Purchase Invoice button.
+		"""
+		item = make_item("_Test Item Billed By Qty", {"is_stock_item": 1}).name
+		pr = make_purchase_receipt(item_code=item, qty=100, rate=50)
+
+		pi = make_purchase_invoice(pr.name)
+		pi.items[0].qty = 25
+		pi.items[0].rate = 200
+		pi.insert()
+		pi.submit()
+
+		pr.reload()
+		self.assertEqual(pr.items[0].billed_amt, pr.items[0].amount)  # amount is fully covered
+		self.assertEqual(pr.per_billed, 25)
+		self.assertEqual(pr.status, "Partly Billed")
+
+	@ERPNextTestSuite.change_settings(
+		"Buying Settings", {"set_landed_cost_based_on_purchase_invoice_rate": 1, "maintain_same_rate": 0}
+	)
+	def test_per_billed_is_full_when_whole_qty_is_billed_at_a_lower_rate(self):
+		# Nothing is left to invoice even though the billed amount is half the receipt amount.
+		item = make_item("_Test Item Billed Below Rate", {"is_stock_item": 1}).name
+		pr = make_purchase_receipt(item_code=item, qty=100, rate=50)
+
+		pi = make_purchase_invoice(pr.name)
+		pi.items[0].rate = 25
+		pi.insert()
+		pi.submit()
+
+		pr.reload()
+		self.assertEqual(pr.items[0].billed_amt, 2500)
+		self.assertEqual(pr.per_billed, 100)
+		self.assertEqual(pr.status, "Completed")
+
+	@ERPNextTestSuite.change_settings(
+		"Buying Settings", {"set_landed_cost_based_on_purchase_invoice_rate": 0, "maintain_same_rate": 0}
+	)
+	def test_per_billed_counts_amount_when_landed_cost_is_not_set_from_invoice_rate(self):
+		# Without that setting the invoice rate is meant to match, so amount stays the measure.
+		item = make_item("_Test Item Billed By Amount", {"is_stock_item": 1}).name
+		pr = make_purchase_receipt(item_code=item, qty=100, rate=50)
+
+		pi = make_purchase_invoice(pr.name)
+		pi.items[0].qty = 25
+		pi.items[0].rate = 200
+		pi.insert()
+		pi.submit()
+
+		pr.reload()
+		self.assertEqual(pr.per_billed, 100)
+		self.assertEqual(pr.status, "Completed")
+
 
 def create_asset_category_for_pr_test():
 	category_name = "Test Asset Category for PR"
