@@ -187,3 +187,63 @@ class TestExpensesAddedToStock(ERPNextTestSuite):
 			},
 		)
 		self.assertFalse(booked)
+
+	def get_purchase_expense_entries(self, voucher_type, voucher_no):
+		return frappe.get_all(
+			"GL Entry",
+			filters={
+				"voucher_type": voucher_type,
+				"voucher_no": voucher_no,
+				"is_cancelled": 0,
+				"account": ("in", [self.purchase_expense_account, self.purchase_expense_contra_account]),
+			},
+		)
+
+	def test_unconfigured_company_books_nothing_on_stock_entry(self):
+		"""The flag is global but the accounts are per company, so a company that configured
+		neither account must keep working instead of blocking every stock voucher."""
+		frappe.db.set_value(
+			"Company",
+			COMPANY,
+			{
+				"expenses_added_to_stock_account": None,
+				"expenses_added_to_stock_contra_account": None,
+			},
+		)
+
+		se = make_stock_entry(item_code=self.item, to_warehouse=WAREHOUSE, qty=10, rate=100, company=COMPANY)
+
+		self.assertEqual(se.docstatus, 1)
+		_balances, debits, credits = self.get_gl_balances("Stock Entry", se.name)
+		self.assertEqual(debits[self.eats_account], 0)
+		self.assertEqual(credits[self.eats_contra_account], 0)
+
+	def test_unconfigured_company_books_nothing_on_purchase_receipt(self):
+		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+
+		frappe.db.set_value(
+			"Company",
+			COMPANY,
+			{
+				"purchase_expense_account": None,
+				"purchase_expense_contra_account": None,
+			},
+		)
+
+		pr = make_purchase_receipt(
+			company=COMPANY, warehouse=WAREHOUSE, item_code=self.item, qty=10, rate=100
+		)
+
+		self.assertEqual(pr.docstatus, 1)
+		self.assertFalse(self.get_purchase_expense_entries("Purchase Receipt", pr.name))
+
+	def test_zero_valuation_row_does_not_require_purchase_expense_accounts(self):
+		"""A row worth nothing books no pair, so it must not make the accounts mandatory either."""
+		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+
+		frappe.db.set_value("Company", COMPANY, "purchase_expense_contra_account", None)
+
+		pr = make_purchase_receipt(company=COMPANY, warehouse=WAREHOUSE, item_code=self.item, qty=10, rate=0)
+
+		self.assertEqual(pr.docstatus, 1)
+		self.assertFalse(self.get_purchase_expense_entries("Purchase Receipt", pr.name))
