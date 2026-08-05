@@ -206,6 +206,11 @@ class BaseStockGLComposer(BaseGLComposer):
 		fields = ("expenses_added_to_stock_account", "expenses_added_to_stock_contra_account")
 		details = get_expenses_added_to_stock_accounts(item_code, doc.company)
 
+		# A company that configured neither account has opted out of the booking; only a
+		# half-configured one is a misconfiguration worth throwing on.
+		if not any(details.get(field) for field in fields):
+			return
+
 		for field in fields:
 			if not details.get(field):
 				frappe.throw(

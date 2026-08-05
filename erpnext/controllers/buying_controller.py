@@ -338,6 +338,11 @@ class BuyingController(SubcontractingController):
 			if not details.get(field):
 				details[field] = frappe.get_cached_value("Company", self.company, field)
 
+		# A company that configured neither account has opted out of the booking; only a
+		# half-configured one is a misconfiguration worth throwing on.
+		if not any(details.get(field) for field in fields):
+			return None
+
 		for field in fields:
 			if not details.get(field):
 				frappe.throw(
@@ -363,16 +368,17 @@ class BuyingController(SubcontractingController):
 			if row.item_code not in stock_items:
 				continue
 
-			details = self.get_validated_purchase_expense_details(row.item_code)
-			if not details:
-				continue
-
 			amount = flt(row.valuation_rate * row.stock_qty, row.precision("base_amount"))
 			if row.landed_cost_voucher_amount:
 				amount -= flt(row.landed_cost_voucher_amount, row.precision("base_amount"))
 
 			if not amount:
-				# GL Entry rejects a row with neither a debit nor a credit.
+				# GL Entry rejects a row with neither a debit nor a credit, so a row that books
+				# nothing must not make the expense accounts mandatory either.
+				continue
+
+			details = self.get_validated_purchase_expense_details(row.item_code)
+			if not details:
 				continue
 
 			self.add_gl_entry(
