@@ -2,7 +2,7 @@
 # For license information, please see license.txt
 import datetime
 import json
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from typing import Any
 
 import frappe
@@ -1284,20 +1284,35 @@ class JobCard(Document):
 		doc = frappe.get_doc("Work Order", self.work_order)
 
 		if doc.transfer_material_against == "Job Card" and not doc.skip_transfer:
-			qty = self.get_min_completed_operation_qty(doc)
+			qty = self.get_min_transferred_operation_qty(doc)
 			doc.db_set("material_transferred_for_manufacturing", qty)
 
-	def get_min_completed_operation_qty(self, doc):
+	def get_min_transferred_operation_qty(self, doc):
+		"""Qty for which every operation has received its raw material."""
+		operation_wise_qty = self.get_transferred_qty_by_operation(doc.name)
+
 		min_qty = []
 		for d in doc.operations:
-			completed_qty = flt(d.completed_qty) + flt(d.process_loss_qty)
-			if completed_qty:
-				min_qty.append(completed_qty)
-			else:
-				min_qty = []
-				break
+			transferred_qty = flt(operation_wise_qty.get(d.name))
+			if not transferred_qty:
+				return 0.0
+
+			min_qty.append(transferred_qty)
 
 		return min(min_qty) if min_qty else 0.0
+
+	def get_transferred_qty_by_operation(self, work_order):
+		job_cards = frappe.get_all(
+			"Job Card",
+			filters={"work_order": work_order, "docstatus": ("<", 2)},
+			fields=["operation_id", "transferred_qty"],
+		)
+
+		operation_wise_qty = defaultdict(float)
+		for row in job_cards:
+			operation_wise_qty[row.operation_id] += flt(row.transferred_qty)
+
+		return operation_wise_qty
 
 	def set_status(self, update_status=False):
 		self.status = {0: "Open", 1: "Submitted", 2: "Cancelled"}[self.docstatus or 0]

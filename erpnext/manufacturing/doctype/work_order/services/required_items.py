@@ -161,7 +161,7 @@ class RequiredItemsService:
 
 	def recompute_material_transferred_for_manufacturing(self, transferred_items):
 		"""Set material_transferred_for_manufacturing based on actual item-level transfers, not fg_completed_qty."""
-		# Job Card transfers use the minimum completed quantity across operations.
+		# Job Card transfers are rolled up by Job Card.set_transferred_qty_in_work_order().
 		if self.doc.operations and self.doc.transfer_material_against == "Job Card":
 			return
 
