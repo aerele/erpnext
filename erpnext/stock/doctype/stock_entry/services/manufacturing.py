@@ -275,7 +275,38 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 		self.validate_warehouse()
 		self.validate_raw_materials_exists()
 		self.validate_component_and_quantities()
+		self.validate_qty_against_completed_operations()
 		self.validate_finished_good_serial_batch_for_work_order()
+
+	def validate_qty_against_completed_operations(self):
+		"""Cap production by the operation that has completed the least, since material
+		transfer is tracked per Job Card and no longer limits the finished qty."""
+		if not self.wo_doc or self.doc.get("is_return") or self.doc.job_card:
+			return
+
+		if (
+			self.wo_doc.transfer_material_against != "Job Card"
+			or self.wo_doc.skip_transfer
+			or self.wo_doc.track_semi_finished_goods
+			or not self.wo_doc.operations
+		):
+			return
+
+		precision = self.doc.precision("fg_completed_qty")
+		completed_qty = min(flt(d.completed_qty) + flt(d.process_loss_qty) for d in self.wo_doc.operations)
+		pending_qty = flt(completed_qty - flt(self.wo_doc.produced_qty), precision)
+
+		if flt(self.doc.fg_completed_qty, precision) > pending_qty:
+			frappe.throw(
+				_(
+					"Qty to Manufacture {0} cannot be greater than {1}, the quantity completed in every operation of Work Order {2}."
+				).format(
+					flt(self.doc.fg_completed_qty, precision),
+					pending_qty,
+					frappe.bold(self.doc.work_order),
+				),
+				title=_("Operations Not Completed"),
+			)
 
 	def validate_finished_good_serial_batch_for_work_order(self):
 		if not (

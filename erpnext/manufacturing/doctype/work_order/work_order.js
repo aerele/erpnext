@@ -903,7 +903,7 @@ erpnext.work_order = {
 
 				if (!frm.doc.skip_transfer) {
 					if (flt(doc.material_transferred_for_manufacturing) > 0) {
-						if (flt(doc.produced_qty) < flt(doc.material_transferred_for_manufacturing)) {
+						if (erpnext.work_order.get_max_transferable_qty(frm, "Manufacture") > 0) {
 							frm.has_finish_btn = true;
 
 							let finish_btn = frm.add_custom_button(__("Finish"), function () {
@@ -914,7 +914,11 @@ erpnext.work_order = {
 								// all materials transferred for manufacturing, make this primary
 								finish_btn.addClass("btn-primary");
 							}
-						} else if (frm.doc.__onload && frm.doc.__onload.overproduction_percentage) {
+						} else if (
+							flt(doc.produced_qty) >= flt(doc.material_transferred_for_manufacturing) &&
+							frm.doc.__onload &&
+							frm.doc.__onload.overproduction_percentage
+						) {
 							let allowance_percentage = frm.doc.__onload.overproduction_percentage;
 
 							if (allowance_percentage > 0) {
@@ -1023,11 +1027,31 @@ erpnext.work_order = {
 		} else {
 			if (purpose === "Manufacture") {
 				max = flt(frm.doc.material_transferred_for_manufacturing) - flt(frm.doc.produced_qty);
+
+				const completed_qty = erpnext.work_order.get_completed_operation_qty(frm);
+				if (completed_qty !== null) {
+					max = Math.min(max, completed_qty - flt(frm.doc.produced_qty));
+				}
 			} else {
 				max = flt(frm.doc.qty) - flt(frm.doc.material_transferred_for_manufacturing);
 			}
 		}
 		return flt(max, precision("qty"));
+	},
+
+	get_completed_operation_qty: (frm) => {
+		// Null when production is not capped by operations, i.e. material is not transferred
+		// against Job Cards.
+		if (
+			frm.doc.skip_transfer ||
+			frm.doc.track_semi_finished_goods ||
+			frm.doc.transfer_material_against !== "Job Card" ||
+			!(frm.doc.operations || []).length
+		) {
+			return null;
+		}
+
+		return Math.min(...frm.doc.operations.map((op) => flt(op.completed_qty) + flt(op.process_loss_qty)));
 	},
 
 	show_disassembly_prompt: function (frm) {
