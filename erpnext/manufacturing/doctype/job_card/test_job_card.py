@@ -557,6 +557,72 @@ class TestJobCard(ERPNextTestSuite):
 		work_order.reload()
 		self.assertEqual(work_order.material_transferred_for_manufacturing, min(completed_qty))
 
+	def test_work_order_transferred_qty_before_operations_are_completed(self):
+		"Transferred qty must follow the material transferred, not the operations completed."
+		create_bom_with_multiple_operations()
+		work_order = make_wo_with_transfer_against_jc()
+		self.generate_required_stock(work_order)
+
+		job_cards = frappe.get_all(
+			"Job Card", filters={"work_order": work_order.name}, pluck="name", order_by="sequence_id"
+		)
+
+		for job_card_name in job_cards:
+			job_card = frappe.get_doc("Job Card", job_card_name)
+			transfer_entry = make_stock_entry_from_jc(job_card.name)
+			transfer_entry.fg_completed_qty = job_card.for_quantity
+			transfer_entry.get_items()
+			transfer_entry.submit()
+
+		work_order.reload()
+		self.assertEqual(work_order.material_transferred_for_manufacturing, work_order.qty)
+
+	@ERPNextTestSuite.change_settings(
+		"Manufacturing Settings",
+		{"backflush_raw_materials_based_on": "Material Transferred for Manufacture"},
+	)
+	def test_manufacture_qty_capped_by_completed_operations(self):
+		from erpnext.manufacturing.doctype.work_order.mapper import make_stock_entry as make_se_from_wo
+
+		create_bom_with_multiple_operations()
+		work_order = make_wo_with_transfer_against_jc()
+		self.generate_required_stock(work_order)
+
+		job_cards = frappe.get_all(
+			"Job Card", filters={"work_order": work_order.name}, pluck="name", order_by="sequence_id"
+		)
+
+		# transfer material for the full Work Order qty, complete half of it in every operation
+		for job_card_name in job_cards:
+			job_card = frappe.get_doc("Job Card", job_card_name)
+			transfer_entry = make_stock_entry_from_jc(job_card.name)
+			transfer_entry.fg_completed_qty = job_card.for_quantity
+			transfer_entry.get_items()
+			transfer_entry.submit()
+
+			job_card.reload()
+			job_card.for_quantity = work_order.qty / 2
+			job_card.append(
+				"time_logs",
+				{
+					"from_time": now(),
+					"to_time": add_to_date(now(), hours=1),
+					"completed_qty": work_order.qty / 2,
+				},
+			)
+			job_card.save()
+			job_card.submit()
+
+		# raw material is consumed for the qty being manufactured, not for everything transferred
+		manufacture_entry = frappe.get_doc(make_se_from_wo(work_order.name, "Manufacture", 2))
+		manufacture_entry.insert()
+		consumed = {row.item_code: row.qty for row in manufacture_entry.items if not row.is_finished_item}
+		self.assertEqual(consumed["_Test Item"], 2)
+		self.assertEqual(consumed["_Test Item Home Desktop Manufactured"], 6)
+
+		excess_entry = frappe.get_doc(make_se_from_wo(work_order.name, "Manufacture", 3))
+		self.assertRaisesRegex(frappe.ValidationError, "cannot be greater than 2.0", excess_entry.insert)
+
 	@ERPNextTestSuite.change_settings(
 		"Manufacturing Settings", {"add_corrective_operation_cost_in_finished_good_valuation": 1}
 	)
