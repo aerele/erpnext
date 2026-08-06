@@ -175,7 +175,10 @@ def get_query_based_on_filters(query, batch, table, filters):
 		query = query.where(table.posting_datetime <= to_date)
 
 	if filters.warehouse:
-		lft, rgt = frappe.db.get_value("Warehouse", filters.warehouse, ["lft", "rgt"])
+		warehouse_info = frappe.db.get_value("Warehouse", filters.warehouse, ["lft", "rgt"])
+		if not warehouse_info:
+			frappe.throw(_("Warehouse {0} does not exist").format(filters.warehouse))
+		lft, rgt = warehouse_info
 		warehouses = frappe.get_all(
 			"Warehouse", filters={"lft": (">=", lft), "rgt": ("<=", rgt), "is_group": 0}, pluck="name"
 		)
