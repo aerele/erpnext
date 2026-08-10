@@ -653,22 +653,15 @@ class SalesInvoice(SellingController):
 	def check_credit_limit(self):
 		from erpnext.selling.doctype.customer.customer import check_credit_limit
 
-		validate_against_credit_limit = False
 		bypass_credit_limit_check_at_sales_order = frappe.db.get_value(
 			"Customer Credit Limit",
 			filters={"parent": self.customer, "parenttype": "Customer", "company": self.company},
 			fieldname=["bypass_credit_limit_check"],
 		)
 
-		if bypass_credit_limit_check_at_sales_order:
-			validate_against_credit_limit = True
-
-		for d in self.get("items"):
-			if not (d.sales_order or d.delivery_note):
-				validate_against_credit_limit = True
-				break
-		if validate_against_credit_limit:
-			check_credit_limit(self.customer, self.company, bypass_credit_limit_check_at_sales_order)
+		# outstanding moves between ordering and billing, so the limit is checked on every
+		# invoice, including the ones drawn from a Sales Order or Delivery Note
+		check_credit_limit(self.customer, self.company, bypass_credit_limit_check_at_sales_order)
 
 	def check_overdue_billing_threshold(self):
 		from erpnext.selling.doctype.customer.customer import check_overdue_billing_threshold
