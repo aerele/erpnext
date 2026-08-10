@@ -332,6 +332,46 @@ class TestCustomer(ERPNextTestSuite):
 		if credit_limit > outstanding_amt:
 			set_credit_limit("_Test Customer", "_Test Company", credit_limit)
 
+	def test_credit_limit_on_invoice_against_source_document(self):
+		# outstanding moves between ordering and billing, so an invoice drawn from a
+		# Sales Order or Delivery Note must still be checked against the credit limit
+		from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
+		from erpnext.selling.doctype.sales_order.mapper import make_sales_invoice as si_from_so
+		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+		from erpnext.stock.doctype.delivery_note.mapper import make_sales_invoice as si_from_dn
+
+		customer = frappe.get_doc(get_customer_dict("_Test Credit Limit Customer")).insert(
+			ignore_permissions=True
+		)
+		self.addCleanup(frappe.delete_doc, "Customer", customer.name, force=True)
+		set_credit_limit(customer.name, "_Test Company", 100000)
+
+		# ordered and delivered while the customer is well inside the limit
+		frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 1)
+		so = make_sales_order(customer=customer.name, qty=10, rate=1000)
+		dn = make_delivery_note(so.name)
+		dn.insert()
+		dn.submit()
+
+		# limit tightened later, customer is now over it
+		set_credit_limit(customer.name, "_Test Company", 1000)
+
+		for make_invoice, source in ((si_from_dn, dn.name), (si_from_so, so.name)):
+			# a failed submit is undone by the request rollback in practice
+			frappe.db.savepoint("credit_limit_check")
+			si = make_invoice(source)
+			si.insert()
+			self.assertRaises(frappe.ValidationError, si.submit)
+			frappe.db.rollback(save_point="credit_limit_check")
+
+		# and still goes through once the limit accommodates the outstanding
+		set_credit_limit(customer.name, "_Test Company", 100000)
+
+		si = si_from_so(so.name)
+		si.insert()
+		si.submit()
+		self.assertEqual(si.docstatus, 1)
+
 	def test_customer_credit_limit_after_submit(self):
 		from erpnext.controllers.accounts_controller import update_child_qty_rate
 		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
