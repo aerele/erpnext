@@ -332,6 +332,40 @@ class TestCustomer(ERPNextTestSuite):
 		if credit_limit > outstanding_amt:
 			set_credit_limit("_Test Customer", "_Test Company", credit_limit)
 
+	def test_credit_limit_on_delivery_note_against_sales_order(self):
+		# outstanding moves between ordering and delivery, so a Delivery Note drawn from a
+		# Sales Order must still be checked against the credit limit
+		from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
+		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+
+		customer = frappe.get_doc(get_customer_dict("_Test Delivery Credit Limit Customer")).insert(
+			ignore_permissions=True
+		)
+		self.addCleanup(frappe.delete_doc, "Customer", customer.name, force=True)
+		set_credit_limit(customer.name, "_Test Company", 100000)
+
+		# ordered while the customer is well inside the limit
+		frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 1)
+		so = make_sales_order(customer=customer.name, qty=10, rate=1000)
+
+		# limit tightened later, customer is now over it
+		set_credit_limit(customer.name, "_Test Company", 1000)
+
+		# a failed submit is undone by the request rollback in practice
+		frappe.db.savepoint("credit_limit_check")
+		dn = make_delivery_note(so.name)
+		dn.insert()
+		self.assertRaises(frappe.ValidationError, dn.submit)
+		frappe.db.rollback(save_point="credit_limit_check")
+
+		# and still goes through once the limit accommodates the outstanding
+		set_credit_limit(customer.name, "_Test Company", 100000)
+
+		dn = make_delivery_note(so.name)
+		dn.insert()
+		dn.submit()
+		self.assertEqual(dn.docstatus, 1)
+
 	def test_customer_credit_limit_after_submit(self):
 		from erpnext.controllers.accounts_controller import update_child_qty_rate
 		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
