@@ -589,8 +589,6 @@ class DeliveryNote(SellingController):
 		if self.per_billed == 100:
 			return
 
-		extra_amount = 0
-		validate_against_credit_limit = False
 		bypass_credit_limit_check_at_sales_order = cint(
 			frappe.db.get_value(
 				"Customer Credit Limit",
@@ -599,22 +597,19 @@ class DeliveryNote(SellingController):
 			)
 		)
 
-		if bypass_credit_limit_check_at_sales_order:
-			for d in self.get("items"):
-				if not d.against_sales_invoice:
-					validate_against_credit_limit = True
-					extra_amount = self.base_grand_total
-					break
-		else:
-			for d in self.get("items"):
-				if not (d.against_sales_order or d.against_sales_invoice):
-					validate_against_credit_limit = True
-					break
+		# open sales orders are left out of the outstanding when the check is bypassed at
+		# the order stage, so the delivered value has to be added in on top
+		extra_amount = 0
+		if bypass_credit_limit_check_at_sales_order and any(
+			not d.against_sales_invoice for d in self.get("items")
+		):
+			extra_amount = self.base_grand_total
 
-		if validate_against_credit_limit:
-			check_credit_limit(
-				self.customer, self.company, bypass_credit_limit_check_at_sales_order, extra_amount
-			)
+		# outstanding moves between ordering and delivery, so the limit is checked on every
+		# delivery note, including the ones drawn from a Sales Order
+		check_credit_limit(
+			self.customer, self.company, bypass_credit_limit_check_at_sales_order, extra_amount
+		)
 
 	def validate_packed_qty(self):
 		"""Validate that if packed qty exists, it should be equal to qty"""
