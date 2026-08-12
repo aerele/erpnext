@@ -298,6 +298,140 @@ class TestBOMCreator(ERPNextTestSuite):
 			docname="non-existent-row",
 		)
 
+	def test_add_item_with_alternate_uom(self):
+		doc = make_uom_bom_creator("Sheet BOM Alternate UOM")
+
+		doc.add_item(
+			item_code="_Test Steel Sheet UOM",
+			fg_item=doc.item_code,
+			fg_reference_id=doc.name,
+			qty=3,
+			uom="_Test Box UOM",
+		)
+		doc.reload()
+
+		row = doc.items[-1]
+		self.assertEqual(row.uom, "_Test Box UOM")
+		self.assertEqual(row.conversion_factor, 5.0)
+		self.assertEqual(row.stock_qty, 15.0)
+		self.assertEqual(row.stock_uom, "Kg")
+
+	def test_add_item_defaults_to_stock_uom(self):
+		doc = make_uom_bom_creator("Sheet BOM Stock UOM")
+
+		doc.add_item(
+			item_code="_Test Steel Sheet UOM",
+			fg_item=doc.item_code,
+			fg_reference_id=doc.name,
+			qty=4,
+		)
+		doc.reload()
+
+		row = doc.items[-1]
+		self.assertEqual(row.uom, "Kg")
+		self.assertEqual(row.conversion_factor, 1.0)
+		self.assertEqual(row.stock_qty, 4.0)
+
+	def test_edit_bom_creator_refetches_conversion_factor(self):
+		doc = make_uom_bom_creator("Sheet BOM Edit UOM")
+
+		doc.add_item(
+			item_code="_Test Steel Sheet UOM",
+			fg_item=doc.item_code,
+			fg_reference_id=doc.name,
+			qty=3,
+		)
+		doc.reload()
+		docname = doc.items[-1].name
+
+		# switching UOM without an explicit factor must refetch it
+		doc.edit_bom_creator(docname, {"uom": "_Test Box UOM", "qty": 3})
+		doc.reload()
+		row = next(row for row in doc.items if row.name == docname)
+		self.assertEqual(row.conversion_factor, 5.0)
+		self.assertEqual(row.stock_qty, 15.0)
+
+		# an explicitly supplied factor wins over the item master
+		doc.edit_bom_creator(docname, {"uom": "_Test Box UOM", "conversion_factor": 7})
+		doc.reload()
+		row = next(row for row in doc.items if row.name == docname)
+		self.assertEqual(row.conversion_factor, 7.0)
+		self.assertEqual(row.stock_qty, 21.0)
+
+		# back to the stock UOM the factor must reset to 1
+		doc.edit_bom_creator(docname, {"uom": "Kg"})
+		doc.reload()
+		row = next(row for row in doc.items if row.name == docname)
+		self.assertEqual(row.conversion_factor, 1.0)
+		self.assertEqual(row.stock_qty, 3.0)
+
+	def test_sub_assembly_raw_material_alternate_uom(self):
+		doc = make_uom_bom_creator("Sheet BOM Sub Assembly UOM")
+
+		doc.add_sub_assembly(
+			fg_item=doc.item_code,
+			fg_reference_id=doc.name,
+			bom_item={
+				"item_code": "_Test Steel Frame UOM",
+				"qty": 1,
+				"items": [
+					{"item_code": "_Test Steel Sheet UOM", "qty": 2, "uom": "_Test Box UOM"},
+				],
+			},
+		)
+		doc.reload()
+
+		row = next(row for row in doc.items if row.item_code == "_Test Steel Sheet UOM")
+		self.assertEqual(row.uom, "_Test Box UOM")
+		self.assertEqual(row.conversion_factor, 5.0)
+		self.assertEqual(row.stock_qty, 10.0)
+
+	def test_created_bom_carries_alternate_uom(self):
+		doc = make_uom_bom_creator("Sheet BOM To BOM UOM")
+
+		doc.add_item(
+			item_code="_Test Steel Sheet UOM",
+			fg_item=doc.item_code,
+			fg_reference_id=doc.name,
+			qty=3,
+			uom="_Test Box UOM",
+		)
+		doc.reload()
+		doc.submit()
+		doc.create_boms()
+
+		bom = frappe.get_doc("BOM", {"bom_creator": doc.name, "item": doc.item_code})
+		row = next(row for row in bom.items if row.item_code == "_Test Steel Sheet UOM")
+		self.assertEqual(row.uom, "_Test Box UOM")
+		self.assertEqual(row.conversion_factor, 5.0)
+		self.assertEqual(row.stock_qty, 15.0)
+		self.assertEqual(row.stock_uom, "Kg")
+
+
+def make_uom_bom_creator(name):
+	"""BOM Creator whose raw material is stocked in Kg and also sold in a 5 Kg box."""
+	if not frappe.db.exists("UOM", "_Test Box UOM"):
+		frappe.get_doc({"doctype": "UOM", "uom_name": "_Test Box UOM"}).insert()
+
+	make_item(
+		"_Test Steel Sheet UOM",
+		{"item_group": "Raw Material", "stock_uom": "Kg", "valuation_rate": 100},
+		uoms=[{"uom": "_Test Box UOM", "conversion_factor": 5}],
+	)
+	make_item("_Test Steel Frame UOM", {"item_group": "Raw Material", "stock_uom": "Nos"})
+	make_item("_Test Steel Machine UOM", {"item_group": "Raw Material", "stock_uom": "Nos"})
+
+	return make_bom_creator(
+		name=name,
+		company="_Test Company",
+		item_code="_Test Steel Machine UOM",
+		qty=1,
+		rm_cosy_as_per="Valuation Rate",
+		currency="INR",
+		plc_conversion_rate=1,
+		conversion_rate=1,
+	)
+
 
 def create_items():
 	raw_materials = [
