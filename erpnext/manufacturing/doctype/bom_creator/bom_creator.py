@@ -10,6 +10,7 @@ from frappe.utils import cint, flt, sbool
 from pypika.terms import ValueWrapper
 
 from erpnext.manufacturing.doctype.bom.bom import get_bom_item_rate
+from erpnext.stock.get_item_details import get_conversion_factor
 
 BOM_FIELDS = [
 	"company",
@@ -231,9 +232,22 @@ class BOMCreator(Document):
 				row.is_expandable = 1
 
 	def set_conversion_factor(self):
+		"""Fill UOM/conversion factor from the item master and keep stock qty derived."""
 		for row in self.items:
-			if not row.conversion_factor:
+			if not row.stock_uom:
+				row.stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
+
+			if not row.uom:
+				row.uom = row.stock_uom
+
+			if row.uom == row.stock_uom:
 				row.conversion_factor = 1.0
+			elif not row.conversion_factor:
+				row.conversion_factor = flt(
+					get_conversion_factor(row.item_code, row.uom).get("conversion_factor")
+				)
+
+			row.stock_qty = flt(row.qty) * flt(row.conversion_factor)
 
 	def validate_fields(self):
 		fields = {
@@ -402,10 +416,14 @@ class BOMCreator(Document):
 					if key in BOM_ITEM_FIELDS and row.get(key) != value:
 						row.set(key, value)
 						updated = True
+
+				# let set_conversion_factor refetch the factor for the new UOM
+				if updated and "uom" in data and "conversion_factor" not in data:
+					row.conversion_factor = None
 				break
 
 		if updated:
-			self.set_rate_for_items()
+			# before_save refetches the conversion factor and recomputes rates
 			self.save()
 
 		frappe.msgprint(_("Updated successfully"), alert=True)
@@ -439,9 +457,9 @@ class BOMCreator(Document):
 
 		kwargs.update(
 			{
-				"uom": item_info.stock_uom,
+				"uom": kwargs.uom or item_info.stock_uom,
 				"stock_uom": item_info.stock_uom,
-				"conversion_factor": 1,
+				"conversion_factor": kwargs.conversion_factor,
 			}
 		)
 
@@ -475,12 +493,11 @@ class BOMCreator(Document):
 				{
 					"item_code": bom_item.item_code,
 					"qty": bom_item.qty,
-					"uom": item_info.stock_uom,
+					"uom": bom_item.uom or item_info.stock_uom,
 					"fg_item": kwargs.fg_item,
-					"conversion_factor": 1,
+					"conversion_factor": bom_item.conversion_factor,
 					"parent_row_no": parent_row_no,
 					"fg_reference_id": name,
-					"stock_qty": bom_item.qty,
 					"do_not_explode": 1,
 					"is_expandable": 1,
 					"stock_uom": item_info.stock_uom,
@@ -507,12 +524,11 @@ class BOMCreator(Document):
 					"qty": row.qty,
 					"operation": row.operation,
 					"fg_item": bom_item.item_code,
-					"uom": item_info.stock_uom,
+					"uom": row.uom or item_info.stock_uom,
 					"fg_reference_id": name,
 					"parent_row_no": parent_row_no,
-					"conversion_factor": 1,
+					"conversion_factor": row.conversion_factor,
 					"do_not_explode": 1,
-					"stock_qty": row.qty,
 					"stock_uom": item_info.stock_uom,
 				},
 			)
@@ -584,6 +600,9 @@ def get_children(doctype: str | None = None, parent: str | None = None, **kwargs
 		"name",
 		"item_code",
 		"uom",
+		"conversion_factor",
+		"stock_qty",
+		"stock_uom",
 		"rate",
 		"amount",
 		"operation",

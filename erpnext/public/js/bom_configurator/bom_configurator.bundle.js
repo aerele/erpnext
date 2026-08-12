@@ -236,11 +236,108 @@ class BOMConfigurator {
 		};
 	}
 
+	// Reads/writes a row of UOM fields that may live either on a dialog or in a child table grid.
+	get_row_accessors(field) {
+		if (field.grid && field.doc) {
+			return {
+				get: (fieldname) => field.doc[fieldname],
+				set: (values) => {
+					Object.assign(field.doc, values);
+					field.grid.refresh();
+				},
+			};
+		}
+
+		return {
+			get: (fieldname) => field.layout.get_value(fieldname),
+			set: (values) => {
+				for (let fieldname in values) {
+					field.layout.set_value(fieldname, values[fieldname]);
+				}
+			},
+		};
+	}
+
+	set_stock_qty(row) {
+		row.set({ stock_qty: flt(row.get("qty")) * flt(row.get("conversion_factor") || 1) });
+	}
+
+	// UOM / Conversion Factor / Stock Qty, shared by the add item, sub assembly and edit dialogs.
+	get_uom_fields(in_list_view = 0) {
+		let me = this;
+
+		return [
+			{
+				label: __("UOM"),
+				fieldname: "uom",
+				fieldtype: "Link",
+				options: "UOM",
+				in_list_view: in_list_view,
+				get_query() {
+					return {
+						query: "erpnext.controllers.queries.get_item_uom_query",
+						filters: { item_code: me.get_row_accessors(this).get("item_code") },
+					};
+				},
+				onchange() {
+					let row = me.get_row_accessors(this);
+					let item_code = row.get("item_code");
+					let uom = row.get("uom");
+
+					if (!item_code || !uom) {
+						return;
+					}
+
+					frappe.call({
+						method: "erpnext.stock.get_item_details.get_conversion_factor",
+						args: { item_code: item_code, uom: uom },
+						callback: (r) => {
+							if (r.exc) {
+								return;
+							}
+
+							row.set({ conversion_factor: flt(r.message.conversion_factor) });
+							me.set_stock_qty(row);
+						},
+					});
+				},
+			},
+			{
+				// left blank unless fetched or typed, so a half-finished fetch cannot
+				// send a stale 1.0 that the server would then treat as authoritative
+				label: __("Conversion Factor"),
+				fieldname: "conversion_factor",
+				fieldtype: "Float",
+				in_list_view: in_list_view,
+				onchange() {
+					me.set_stock_qty(me.get_row_accessors(this));
+				},
+			},
+			{
+				label: __("Stock Qty"),
+				fieldname: "stock_qty",
+				fieldtype: "Float",
+				in_list_view: in_list_view,
+				read_only: 1,
+			},
+		];
+	}
+
 	add_item(node, view) {
 		frappe.prompt(
 			[
 				{ label: __("Item"), fieldname: "item_code", fieldtype: "Link", options: "Item", reqd: 1 },
-				{ label: __("Qty"), fieldname: "qty", default: 1.0, fieldtype: "Float", reqd: 1 },
+				{
+					label: __("Qty"),
+					fieldname: "qty",
+					default: 1.0,
+					fieldtype: "Float",
+					reqd: 1,
+					onchange() {
+						view.events.set_stock_qty(view.events.get_row_accessors(this));
+					},
+				},
+				...this.get_uom_fields(),
 			],
 			(data) => {
 				if (!node.data.parent_id) {
@@ -255,6 +352,8 @@ class BOMConfigurator {
 						item_code: data.item_code,
 						fg_reference_id: node.data.name || this.frm.doc.name,
 						qty: data.qty,
+						uom: data.uom,
+						conversion_factor: data.conversion_factor,
 					},
 					callback: (r) => {
 						view.events.load_tree(r, node);
@@ -347,6 +446,7 @@ class BOMConfigurator {
 				change() {
 					this.layout.fields_dict.items.grid.data.forEach((row) => {
 						row.qty = flt(this.value);
+						row.stock_qty = flt(row.qty) * flt(row.conversion_factor || 1);
 					});
 
 					this.layout.fields_dict.items.grid.refresh();
@@ -399,6 +499,10 @@ class BOMConfigurator {
 							change() {
 								let doc = this.doc;
 								doc.qty = 1.0;
+								// the previous item's UOM does not carry over
+								doc.uom = "";
+								doc.conversion_factor = null;
+								doc.stock_qty = 1.0;
 								this.grid.set_value("qty", 1.0, doc);
 							},
 						},
@@ -409,7 +513,11 @@ class BOMConfigurator {
 							fieldtype: "Float",
 							reqd: 1,
 							in_list_view: 1,
+							onchange() {
+								view.events.set_stock_qty(view.events.get_row_accessors(this));
+							},
 						},
+						...view.events.get_uom_fields(1),
 					],
 				},
 			]
@@ -503,7 +611,32 @@ class BOMConfigurator {
 	edit_bom(node, view) {
 		let me = this;
 		let qty = node.data.qty || this.frm.doc.qty;
-		let fields = [{ label: __("Qty"), fieldname: "qty", default: qty, fieldtype: "Float", reqd: 1 }];
+		let fields = [
+			{
+				label: __("Item"),
+				fieldname: "item_code",
+				fieldtype: "Link",
+				options: "Item",
+				read_only: 1,
+				default: node.data.item_code || this.frm.doc.item_code,
+			},
+			{
+				label: __("Qty"),
+				fieldname: "qty",
+				default: qty,
+				fieldtype: "Float",
+				reqd: 1,
+				onchange() {
+					me.set_stock_qty(me.get_row_accessors(this));
+				},
+			},
+			...this.get_uom_fields(),
+		];
+
+		fields.find((field) => field.fieldname === "uom").default = node.data.uom;
+		fields.find((field) => field.fieldname === "conversion_factor").default =
+			node.data.conversion_factor || 1.0;
+		fields.find((field) => field.fieldname === "stock_qty").default = node.data.stock_qty;
 
 		this.frm.edit_bom_dialog = frappe.prompt(
 			fields,
