@@ -362,6 +362,30 @@ class TestCustomer(ERPNextTestSuite):
 			so.name,
 		)
 
+	def test_credit_limit_not_bypassed_for_so_linked_sales_invoice(self):
+		from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
+		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+
+		# Start from an unrestricted limit so the Sales Order itself is never blocked.
+		set_credit_limit("_Test Customer", "_Test Company", 0)
+
+		so = make_sales_order(customer="_Test Customer", company="_Test Company", rate=100, qty=1)
+		outstanding_amt = get_customer_outstanding("_Test Customer", "_Test Company")
+
+		# Lower the credit limit below the customer's current outstanding, simulating other
+		# invoices having pushed the balance up after this Sales Order was already approved.
+		set_credit_limit("_Test Customer", "_Test Company", outstanding_amt - 1)
+
+		si = make_sales_invoice(so.name)
+		si.insert()
+
+		# Every item on this invoice is linked back to the Sales Order, which previously caused
+		# the credit limit check to be skipped entirely on submission.
+		self.assertTrue(all(d.sales_order for d in si.items))
+		self.assertRaises(frappe.ValidationError, si.submit)
+
+		set_credit_limit("_Test Customer", "_Test Company", 0)
+
 	def test_customer_credit_limit_on_change(self):
 		outstanding_amt = self.get_customer_outstanding_amount()
 		customer = frappe.get_doc("Customer", "_Test Customer")
