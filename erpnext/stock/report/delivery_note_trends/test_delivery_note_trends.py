@@ -1,6 +1,9 @@
 # Copyright (c) 2026, Frappe Technologies Pvt. Ltd. and Contributors
 # See license.txt
 
+import json
+from pathlib import Path
+
 import frappe
 
 from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
@@ -77,6 +80,15 @@ class TestDeliveryNoteTrends(ERPNextTestSuite):
 		self.assertEqual(after[cols[1]] - before[cols[1]], 1000)
 		self.assertEqual(after["Total(Qty)"] - before["Total(Qty)"], 5)
 		self.assertEqual(after["Total(Amt)"] - before["Total(Amt)"], 1000)
+
+	def test_total_row_is_rendered_by_report_footer(self):
+		self.deliver()
+		_, data = self.run_report_full()
+		report = json.loads(Path(__file__).with_name("delivery_note_trends.json").read_text())
+
+		self.assertTrue(report["add_total_row"])
+		self.assertTrue(any(row[0] == ITEM for row in data))
+		self.assertFalse(any(row[0] == "'Total'" for row in data))
 
 	def test_monthly_period_buckets(self):
 		cols = ["Jun (Qty)", "Jun (Amt)", "Total(Qty)", "Total(Amt)"]
