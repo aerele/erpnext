@@ -97,7 +97,7 @@ class PurchaseReceiptGLComposer(BaseStockGLComposer):
 
 			outgoing_amount = item.base_net_amount
 			if doc.is_internal_transfer() and item.valuation_rate:
-				outgoing_amount = abs(get_stock_value_difference(doc.name, item.name, item.from_warehouse))
+				outgoing_amount = -1 * get_stock_value_difference(doc.name, item.name, item.from_warehouse)
 				credit_amount = outgoing_amount
 
 			if item.get("rejected_qty") and frappe.db.get_single_value(
