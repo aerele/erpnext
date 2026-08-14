@@ -1366,6 +1366,302 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 
 		pr.cancel()
 
+	def test_negative_internal_stock_transfer_from_purchase_receipt_does_not_make_gl_entries(self):
+		from erpnext.accounts.doctype.account.test_account import create_account
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_internal_supplier
+		from erpnext.selling.doctype.customer.test_customer import create_internal_customer
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		company = "_Test Company"
+		customer = create_internal_customer(
+			"_Test Internal Customer 3",
+			company,
+			company,
+		)
+		internal_supplier = create_internal_supplier(
+			"_Test Internal Supplier 3",
+			company,
+			company,
+		)
+		source_warehouse = create_warehouse(
+			"_Test Negative Internal Transfer Source",
+			company=company,
+			properties={"account": "Stock In Hand - _TC"},
+		)
+		transit_warehouse = create_warehouse(
+			"_Test Negative Internal Transfer Transit",
+			company=company,
+			properties={"account": "Stock In Hand - _TC"},
+		)
+		item_code = make_item("_Test Negative Internal Transfer Return Item").name
+
+		old_perpetual_inventory = erpnext.is_perpetual_inventory_enabled(company)
+		old_inventory_account = frappe.db.get_value("Company", company, "default_inventory_account")
+		old_srbnb_account = frappe.db.get_value("Company", company, "stock_received_but_not_billed")
+		old_unrealized_profit_loss_account = frappe.db.get_value(
+			"Company", company, "unrealized_profit_loss_account"
+		)
+		frappe.local.enable_perpetual_inventory[company] = 1
+		frappe.db.set_value(
+			"Company",
+			company,
+			{
+				"default_inventory_account": "Stock In Hand - _TC",
+				"stock_received_but_not_billed": "Stock Received But Not Billed - _TC",
+				"unrealized_profit_loss_account": create_account(
+					account_name="_Test Negative Internal Transfer Unrealized Profit",
+					parent_account="Current Liabilities - _TC",
+					company=company,
+				),
+			},
+		)
+
+		try:
+			seed_pr = make_purchase_receipt(
+				item_code=item_code,
+				warehouse=source_warehouse,
+				company=company,
+				qty=5,
+				rate=100,
+			)
+
+			dn = create_delivery_note(
+				item_code=item_code,
+				company=company,
+				customer=customer,
+				cost_center="Main - _TC",
+				expense_account="Cost of Goods Sold - _TC",
+				qty=2,
+				rate=100,
+				warehouse=source_warehouse,
+				target_warehouse=transit_warehouse,
+			)
+
+			pr = frappe.new_doc("Purchase Receipt")
+			pr.company = company
+			pr.supplier = internal_supplier
+			pr.is_internal_supplier = 1
+			pr.represents_company = company
+			pr.is_return = 1
+			pr.currency = "INR"
+			pr.inter_company_reference = dn.name
+			pr.append(
+				"items",
+				{
+					"item_code": item_code,
+					"warehouse": source_warehouse,
+					"from_warehouse": transit_warehouse,
+					"delivery_note_item": dn.items[0].name,
+					"qty": -2,
+					"received_qty": -2,
+					"stock_qty": -2,
+					"rate": 100,
+					"base_rate": 100,
+					"uom": "Nos",
+					"stock_uom": "Nos",
+					"conversion_factor": 1,
+					"expense_account": "Cost of Goods Sold - _TC",
+					"cost_center": "Main - _TC",
+				},
+			)
+			pr.insert()
+			pr.submit()
+
+			sl_entries = get_sl_entries("Purchase Receipt", pr.name)
+			gl_entries = get_gl_entries("Purchase Receipt", pr.name, skip_cancelled=True)
+
+			expected_sle = {source_warehouse: -2, transit_warehouse: 2}
+			for sle in sl_entries:
+				self.assertEqual(expected_sle[sle.warehouse], sle.actual_qty)
+
+			self.assertEqual(sum(sle.stock_value_difference for sle in sl_entries), 0)
+			self.assertFalse(gl_entries)
+
+			pr.cancel()
+			dn.cancel()
+			seed_pr.cancel()
+		finally:
+			frappe.local.enable_perpetual_inventory[company] = old_perpetual_inventory
+			frappe.db.set_value(
+				"Company",
+				company,
+				{
+					"default_inventory_account": old_inventory_account,
+					"stock_received_but_not_billed": old_srbnb_account,
+					"unrealized_profit_loss_account": old_unrealized_profit_loss_account,
+				},
+			)
+
+	def test_internal_stock_transfer_return_against_pr_does_not_make_gl_entries(self):
+		from erpnext.accounts.doctype.account.test_account import create_account
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_internal_supplier
+		from erpnext.selling.doctype.customer.test_customer import create_internal_customer
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		company = "_Test Company"
+		customer = create_internal_customer(
+			"_Test Internal Customer 3",
+			company,
+			company,
+		)
+		internal_supplier = create_internal_supplier(
+			"_Test Internal Supplier 3",
+			company,
+			company,
+		)
+		source_warehouse = create_warehouse(
+			"_Test Internal Transfer Return Against Source",
+			company=company,
+			properties={"account": "Stock In Hand - _TC"},
+		)
+		transit_warehouse = create_warehouse(
+			"_Test Internal Transfer Return Against Transit",
+			company=company,
+			properties={"account": "Stock In Hand - _TC"},
+		)
+		item_code = make_item("_Test Internal Transfer Return Against Item").name
+
+		old_perpetual_inventory = erpnext.is_perpetual_inventory_enabled(company)
+		old_inventory_account = frappe.db.get_value("Company", company, "default_inventory_account")
+		old_srbnb_account = frappe.db.get_value("Company", company, "stock_received_but_not_billed")
+		old_unrealized_profit_loss_account = frappe.db.get_value(
+			"Company", company, "unrealized_profit_loss_account"
+		)
+		frappe.local.enable_perpetual_inventory[company] = 1
+		frappe.db.set_value(
+			"Company",
+			company,
+			{
+				"default_inventory_account": "Stock In Hand - _TC",
+				"stock_received_but_not_billed": "Stock Received But Not Billed - _TC",
+				"unrealized_profit_loss_account": create_account(
+					account_name="_Test Internal Transfer Return Against Unrealized Profit",
+					parent_account="Current Liabilities - _TC",
+					company=company,
+				),
+			},
+		)
+
+		try:
+			seed_pr = make_purchase_receipt(
+				item_code=item_code,
+				warehouse=source_warehouse,
+				company=company,
+				qty=10,
+				rate=100,
+			)
+			dn = create_delivery_note(
+				item_code=item_code,
+				company=company,
+				customer=customer,
+				cost_center="Main - _TC",
+				expense_account="Cost of Goods Sold - _TC",
+				qty=2,
+				rate=100,
+				warehouse=source_warehouse,
+				target_warehouse=transit_warehouse,
+			)
+			original_pr = frappe.new_doc("Purchase Receipt")
+			original_pr.company = company
+			original_pr.supplier = internal_supplier
+			original_pr.is_internal_supplier = 1
+			original_pr.represents_company = company
+			original_pr.currency = "INR"
+			original_pr.inter_company_reference = dn.name
+			original_pr.append(
+				"items",
+				{
+					"item_code": item_code,
+					"warehouse": source_warehouse,
+					"from_warehouse": transit_warehouse,
+					"delivery_note_item": dn.items[0].name,
+					"qty": 2,
+					"received_qty": 2,
+					"stock_qty": 2,
+					"rate": 100,
+					"base_rate": 100,
+					"uom": "Nos",
+					"stock_uom": "Nos",
+					"conversion_factor": 1,
+					"expense_account": "Cost of Goods Sold - _TC",
+					"cost_center": "Main - _TC",
+				},
+			)
+			original_pr.insert()
+			original_pr.submit()
+
+			return_dn = create_delivery_note(
+				item_code=item_code,
+				company=company,
+				customer=customer,
+				cost_center="Main - _TC",
+				expense_account="Cost of Goods Sold - _TC",
+				qty=2,
+				rate=100,
+				warehouse=source_warehouse,
+				target_warehouse=transit_warehouse,
+			)
+			return_pr = frappe.new_doc("Purchase Receipt")
+			return_pr.company = company
+			return_pr.supplier = internal_supplier
+			return_pr.is_internal_supplier = 1
+			return_pr.represents_company = company
+			return_pr.is_return = 1
+			return_pr.return_against = original_pr.name
+			return_pr.currency = "INR"
+			return_pr.inter_company_reference = return_dn.name
+			return_pr.append(
+				"items",
+				{
+					"item_code": item_code,
+					"warehouse": source_warehouse,
+					"from_warehouse": transit_warehouse,
+					"purchase_receipt_item": original_pr.items[0].name,
+					"delivery_note_item": return_dn.items[0].name,
+					"qty": -2,
+					"received_qty": -2,
+					"stock_qty": -2,
+					"rate": 100,
+					"base_rate": 100,
+					"uom": "Nos",
+					"stock_uom": "Nos",
+					"conversion_factor": 1,
+					"expense_account": "Cost of Goods Sold - _TC",
+					"cost_center": "Main - _TC",
+				},
+			)
+			return_pr.insert()
+			return_pr.submit()
+
+			sl_entries = get_sl_entries("Purchase Receipt", return_pr.name)
+			gl_entries = get_gl_entries("Purchase Receipt", return_pr.name, skip_cancelled=True)
+
+			self.assertEqual(return_pr.return_against, original_pr.name)
+			self.assertEqual(return_pr.items[0].purchase_receipt_item, original_pr.items[0].name)
+			expected_sle = {source_warehouse: -2, transit_warehouse: 2}
+			for sle in sl_entries:
+				self.assertEqual(expected_sle[sle.warehouse], sle.actual_qty)
+
+			self.assertEqual(sum(sle.stock_value_difference for sle in sl_entries), 0)
+			self.assertFalse(gl_entries)
+
+			return_pr.cancel()
+			return_dn.cancel()
+			original_pr.cancel()
+			dn.cancel()
+			seed_pr.cancel()
+		finally:
+			frappe.local.enable_perpetual_inventory[company] = old_perpetual_inventory
+			frappe.db.set_value(
+				"Company",
+				company,
+				{
+					"default_inventory_account": old_inventory_account,
+					"stock_received_but_not_billed": old_srbnb_account,
+					"unrealized_profit_loss_account": old_unrealized_profit_loss_account,
+				},
+			)
+
 	def test_inter_company_purchase_receipt_does_not_inherit_party_fields(self):
 		"""
 		Party-derived fields on DN (from Customer) must not leak into the mapped PR.
