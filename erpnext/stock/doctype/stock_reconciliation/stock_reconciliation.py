@@ -7,7 +7,7 @@ from datetime import timedelta
 import frappe
 from frappe import _, bold, json, msgprint
 from frappe.query_builder.functions import Sum
-from frappe.utils import add_to_date, cint, cstr, flt, get_link_to_form, now
+from frappe.utils import cint, cstr, flt, get_link_to_form, now
 from frappe.utils.data import DateTimeLikeObject
 
 import erpnext
@@ -435,22 +435,16 @@ class StockReconciliation(StockController):
 			item.current_qty = abs(serial_and_batch_bundle.total_qty)
 			item.current_valuation_rate = abs(serial_and_batch_bundle.avg_rate)
 			if save:
-				sle_creation = frappe.db.get_value(
-					"Serial and Batch Bundle", item.serial_and_batch_bundle, "creation"
-				)
-				creation = add_to_date(sle_creation, seconds=-1)
 				item.db_set(
 					{
 						"current_serial_and_batch_bundle": item.current_serial_and_batch_bundle,
 						"current_qty": item.current_qty,
 						"current_valuation_rate": item.current_valuation_rate,
-						"creation": creation,
 					}
 				)
 
 				serial_and_batch_bundle.db_set(
 					{
-						"creation": creation,
 						"voucher_no": self.name,
 						"voucher_detail_no": voucher_detail_no,
 					}

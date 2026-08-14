@@ -289,10 +289,6 @@ def make_entry(args, allow_negative_stock=False, via_landed_cost_voucher=False):
 		sle.flags.ignore_links = True
 	sle.submit()
 
-	# Added to handle the case when the stock ledger entry is created from the repostig
-	if args.get("creation_time") and args.get("voucher_type") == "Stock Reconciliation":
-		sle.db_set("creation", args.get("creation_time"))
-
 	return sle
 
 
