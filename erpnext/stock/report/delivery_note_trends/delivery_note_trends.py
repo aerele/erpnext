@@ -16,6 +16,10 @@ def execute(filters=None):
 
 	chart_data = get_chart_data(data, conditions, filters)
 
+	# The report footer recalculates totals from rows visible after inline filtering.
+	if data and data[-1][0] == f"'{_('Total')}'":
+		data.pop()
+
 	return conditions["columns"], data, None, chart_data
 
 

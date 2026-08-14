@@ -1,5 +1,5 @@
 {
- "add_total_row": 0,
+ "add_total_row": 1,
  "add_translate_data": 0,
  "columns": [],
  "creation": "2013-06-13 18:42:11",
@@ -10,7 +10,7 @@
  "idx": 3,
  "is_standard": "Yes",
  "letter_head": null,
- "modified": "2026-03-13 17:36:31.552712",
+ "modified": "2026-08-14 18:26:14.775984",
  "modified_by": "Administrator",
  "module": "Stock",
  "name": "Delivery Note Trends",
