@@ -461,6 +461,41 @@ class TestStockLedgerEntry(ERPNextTestSuite, StockTestMixin):
 		lcv.cancel()
 		pr.cancel()
 
+	def test_sle_creation_cannot_be_backdated_by_caller(self):
+		# creation orders the immutable ledger for entries sharing a posting datetime.
+		# A caller must not be able to rewrite it, or a reconciliation can reverse itself.
+		from frappe.utils import now_datetime, nowtime
+
+		from erpnext.stock.stock_ledger import make_entry
+
+		item = self.make_item().name
+		warehouse = "_Test Warehouse - _TC"
+		make_stock_entry(item_code=item, target=warehouse, qty=5, rate=100)
+		reco = create_stock_reconciliation(item_code=item, warehouse=warehouse, qty=8, rate=120)
+
+		backdated = add_to_date(now_datetime(), days=-30)
+		sle = make_entry(
+			frappe._dict(
+				{
+					"item_code": item,
+					"warehouse": warehouse,
+					"posting_date": today(),
+					"posting_time": nowtime(),
+					"voucher_type": "Stock Reconciliation",
+					"voucher_no": reco.name,
+					"actual_qty": 1,
+					"qty_after_transaction": 9,
+					"incoming_rate": 120,
+					"valuation_rate": 120,
+					"company": "_Test Company",
+					"is_cancelled": 0,
+					"creation_time": backdated,
+				}
+			)
+		)
+
+		self.assertGreater(frappe.db.get_value("Stock Ledger Entry", sle.name, "creation"), backdated)
+
 	def test_back_dated_entry_not_allowed(self):
 		# Back dated stock transactions are only allowed to stock managers
 		frappe.db.set_single_value(
