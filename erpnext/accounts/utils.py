@@ -662,7 +662,7 @@ def validate_allocated_amount(args):
 	precision = args.get("precision") or frappe.db.get_single_value("System Settings", "currency_precision")
 	if args.get("allocated_amount") < 0:
 		throw(_("Allocated amount cannot be negative"))
-	elif flt(args.get("allocated_amount"), precision) > flt(args.get("unadjusted_amount"), precision):
+	elif flt(args.get("allocated_amount"), precision) - flt(args.get("unadjusted_amount"), precision) > 0.009:
 		throw(_("Allocated amount cannot be greater than unadjusted amount"))
 
 
