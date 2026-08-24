@@ -71,6 +71,40 @@ frappe.query_reports["Purchase Analytics"] = {
 			fieldtype: "Check",
 		},
 	],
+	after_datatable_render(datatable) {
+		const chart_data = frappe.query_report.chart_options?.data;
+		if (!chart_data) return;
+
+		// Keep an untouched copy because checkbox interactions mutate the rendered chart data.
+		datatable.purchase_analytics_chart_data = {
+			labels: [...chart_data.labels],
+			datasets: chart_data.datasets.map((dataset) => ({
+				...dataset,
+				values: [...dataset.values],
+			})),
+		};
+
+		if (datatable.purchase_analytics_filter_bound) return;
+
+		const filter_rows = datatable.datamanager.options.filterRows;
+		datatable.datamanager.options.filterRows = (...args) =>
+			Promise.resolve(filter_rows(...args)).then((row_indices) => {
+				const indices = row_indices || datatable.datamanager.getAllRowIndices();
+				const source_data = datatable.purchase_analytics_chart_data;
+				const data = {
+					labels: source_data.labels,
+					datasets: indices.map((index) => source_data.datasets[index]).filter(Boolean),
+				};
+
+				const options = Object.assign({}, frappe.query_report.chart_options, { data });
+				frappe.query_report.render_chart(options);
+				frappe.query_report.raw_chart_data = data;
+
+				return row_indices;
+			});
+
+		datatable.purchase_analytics_filter_bound = true;
+	},
 	get_datatable_options(options) {
 		return Object.assign(options, {
 			checkboxColumn: true,
