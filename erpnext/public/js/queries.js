@@ -131,6 +131,19 @@ $.extend(erpnext.queries, {
 			});
 		}
 
+		const filters = {
+			link_doctype: "Company",
+			link_name: doc.company || "",
+			is_your_company_address: 1,
+		};
+
+		return {
+			query: "frappe.contacts.doctype.address.address.address_query",
+			filters: filters,
+		};
+	},
+
+	company_shipping_address_query: function (doc) {
 		let filters = { link_doctype: "Company", link_name: doc.company || "" };
 		const is_drop_ship = doc.items.some((item) => item.delivered_by_supplier);
 		if (is_drop_ship) filters = {};

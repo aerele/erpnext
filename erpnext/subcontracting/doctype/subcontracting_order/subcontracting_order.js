@@ -128,7 +128,7 @@ frappe.ui.form.on("Subcontracting Order", {
 		frm.set_query("billing_address", erpnext.queries.company_address_query);
 
 		frm.set_query("shipping_address", () => {
-			return erpnext.queries.company_address_query(frm.doc);
+			return erpnext.queries.company_shipping_address_query(frm.doc);
 		});
 	},
 

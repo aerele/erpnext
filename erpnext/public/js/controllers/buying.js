@@ -52,7 +52,7 @@ erpnext.buying = {
 								query: "frappe.contacts.doctype.address.address.address_query",
 								filters: { link_doctype: "Customer", link_name: this.frm.doc.customer },
 							};
-						} else return erpnext.queries.company_address_query(this.frm.doc);
+						} else return erpnext.queries.company_shipping_address_query(this.frm.doc);
 					});
 				}
 

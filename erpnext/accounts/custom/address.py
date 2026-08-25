@@ -23,9 +23,14 @@ class ERPNextAddress(Address):
 		return super().link_address()
 
 	def update_company_address(self):
-		for link in self.get("links"):
-			if link.link_doctype == "Company":
-				self.is_your_company_address = 1
+		"""Mark only company-owned locations as company addresses.
+
+		Some valid ship-to locations are linked to a Company so they can be used
+		on buying documents, but they may also belong to a Supplier or Customer.
+		Those addresses must not leak into company-address/GSTIN selectors.
+		"""
+		if {link.link_doctype for link in self.get("links")} == {"Company"}:
+			self.is_your_company_address = 1
 
 	def validate_reference(self):
 		if self.get("is_your_company_address") and not [
@@ -58,12 +63,12 @@ def get_shipping_address(company: str, address: str | None = None):
 	filters = [
 		["Dynamic Link", "link_doctype", "=", "Company"],
 		["Dynamic Link", "link_name", "=", company],
-		["Address", "is_your_company_address", "=", 1],
 	]
 	fields = ["*"]
 	if address and frappe.db.get_value("Dynamic Link", {"parent": address, "link_name": company}):
 		filters.append(["Address", "name", "=", address])
-	if not address:
+	else:
+		filters.append(["Address", "is_your_company_address", "=", 1])
 		filters.append(["Address", "is_shipping_address", "=", 1])
 
 	address = frappe.get_all("Address", filters=filters, fields=fields) or {}
