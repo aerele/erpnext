@@ -1168,6 +1168,7 @@ def get_default_company_address(
 		.where(
 			(dl.link_doctype == "Company")
 			& (dl.link_name == name)
+			& (addr.is_your_company_address == 1)
 			& ((addr.disabled == 0) | addr.disabled.isnull())
 		)
 		.run()
