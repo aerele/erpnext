@@ -53,6 +53,9 @@ def get_context(context):
 
 	context.show_pay_button, context.pay_amount = get_payment_details(context.doc)
 	context.show_make_pi_button = False
+	context.show_customer_response_actions = False
+	if context.doc.doctype == "Quotation":
+		context.show_customer_response_actions = context.doc.is_awaiting_customer_response()
 	if context.doc.get("supplier"):
 		# show Make Purchase Invoice button based on permission
 		context.show_make_pi_button = frappe.has_permission("Purchase Invoice", "create")

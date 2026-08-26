@@ -2,10 +2,13 @@
 # License: GNU General Public License v3. See license.txt
 
 
+from typing import Literal
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import getdate, nowdate
+from frappe.utils import cstr, getdate, now_datetime, nowdate
+from frappe.utils.user import is_website_user
 from pypika.terms import ExistsCriterion
 
 from erpnext.controllers.selling_controller import SellingController
@@ -67,6 +70,10 @@ class Quotation(SellingController):
 		customer_address: DF.Link | None
 		customer_group: DF.Link | None
 		customer_name: DF.Data | None
+		customer_responded_by: DF.Link | None
+		customer_responded_on: DF.Datetime | None
+		customer_response: DF.Literal["Pending", "Accepted", "Rejected"]
+		customer_response_note: DF.SmallText | None
 		disable_rounded_total: DF.Check
 		discount_amount: DF.Currency
 		enq_det: DF.Text | None
@@ -354,6 +361,71 @@ class Quotation(SellingController):
 				rows_with_alternatives.append(row.name)
 
 		return rows_with_alternatives
+
+	def is_awaiting_customer_response(self) -> bool:
+		return (
+			self.docstatus == 1
+			and self.status in ("Open", "Replied")
+			and (not self.valid_till or getdate(self.valid_till) >= getdate(nowdate()))
+			and self.customer_response in (None, "", "Pending")
+		)
+
+	def record_customer_response(self, response: Literal["Accepted", "Rejected"], note: str | None) -> dict:
+		if response not in ("Accepted", "Rejected"):
+			frappe.throw(_("Customer response must be Accepted or Rejected."))
+
+		if not self.is_awaiting_customer_response():
+			frappe.throw(_("This quotation is no longer awaiting a customer response."))
+
+		note = cstr(note).strip()
+		if len(note) > 1000:
+			frappe.throw(_("Customer response note cannot exceed 1000 characters."))
+
+		responded_on = now_datetime()
+		quotation = frappe.qb.DocType("Quotation")
+		(
+			frappe.qb.update(quotation)
+			.set(quotation.customer_response, response)
+			.set(quotation.customer_response_note, note)
+			.set(quotation.customer_responded_on, responded_on)
+			.set(quotation.customer_responded_by, frappe.session.user)
+			.set(quotation.modified, responded_on)
+			.set(quotation.modified_by, frappe.session.user)
+			.where(quotation.name == self.name)
+		).run()
+		self.reload()
+		return {
+			"customer_response": self.customer_response,
+			"customer_responded_on": self.customer_responded_on,
+		}
+
+
+@frappe.whitelist(methods=["POST"])
+def respond_from_customer_portal(
+	quotation_name: str,
+	response: Literal["Accepted", "Rejected"],
+	note: str | None = None,
+):
+	if frappe.session.user == "Guest" or not is_website_user():
+		frappe.throw(_("Not Permitted"), frappe.PermissionError)
+	if (
+		not isinstance(quotation_name, str)
+		or not isinstance(response, str)
+		or not isinstance(note, str | type(None))
+	):
+		frappe.throw(_("Invalid customer response request."))
+
+	quotation = frappe.get_doc("Quotation", quotation_name)
+	_validate_customer_portal_access(quotation)
+	frappe.qb.get_query("Quotation", fields=["name"], filters={"name": quotation.name}, for_update=True).run()
+	quotation.reload()
+	_validate_customer_portal_access(quotation)
+	return quotation.record_customer_response(response, note)
+
+
+def _validate_customer_portal_access(quotation: Quotation) -> None:
+	if not frappe.has_website_permission(quotation):
+		frappe.throw(_("Not Permitted"), frappe.PermissionError)
 
 
 def get_list_context(context=None):

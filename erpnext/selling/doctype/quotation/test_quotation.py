@@ -9,6 +9,7 @@ from frappe.utils import add_days, add_months, flt, getdate, nowdate
 
 from erpnext.controllers.accounts_controller import InvalidQtyError, update_child_qty_rate
 from erpnext.selling.doctype.quotation.mapper import make_sales_order
+from erpnext.selling.doctype.quotation.quotation import respond_from_customer_portal
 from erpnext.tests.utils import ERPNextTestSuite
 
 
@@ -54,6 +55,83 @@ class TestQuotation(ERPNextTestSuite):
 		self.assertEqual(qo.get("items")[0].qty, 11)
 		self.assertEqual(qo.get("items")[-1].rate, 100)
 		self.assertEqual(qo.get("items")[1].description, "test")
+
+	def test_customer_portal_response(self):
+		portal_user = self.create_customer_portal_user("quotation.customer@example.com")
+		unauthorized_user = self.create_customer_portal_user(
+			"quotation.other@example.com", link_to_customer=False
+		)
+		quotation = make_quotation()
+
+		with self.set_user(unauthorized_user):
+			self.assertRaises(
+				frappe.PermissionError,
+				respond_from_customer_portal,
+				quotation.name,
+				"Accepted",
+				None,
+			)
+
+		with self.set_user(portal_user):
+			self.assertRaises(
+				frappe.ValidationError,
+				respond_from_customer_portal,
+				quotation.name,
+				["Accepted"],
+				None,
+			)
+			response = respond_from_customer_portal(
+				quotation.name, "Accepted", "Please proceed with the order."
+			)
+			self.assertEqual(response["customer_response"], "Accepted")
+			self.assertRaises(
+				frappe.ValidationError,
+				respond_from_customer_portal,
+				quotation.name,
+				"Rejected",
+				None,
+			)
+
+		quotation.reload()
+		self.assertEqual(quotation.customer_response, "Accepted")
+		self.assertEqual(quotation.customer_response_note, "Please proceed with the order.")
+		self.assertEqual(quotation.customer_responded_by, portal_user)
+		self.assertTrue(quotation.customer_responded_on)
+
+		rejected_quotation = make_quotation()
+		with self.set_user(portal_user):
+			response = respond_from_customer_portal(rejected_quotation.name, "Rejected", "Please revise it.")
+			self.assertEqual(response["customer_response"], "Rejected")
+
+		rejected_quotation.reload()
+		self.assertEqual(rejected_quotation.customer_response, "Rejected")
+		self.assertEqual(rejected_quotation.customer_response_note, "Please revise it.")
+
+	def create_customer_portal_user(self, email, link_to_customer=True):
+		if not frappe.db.exists("User", email):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": email,
+					"first_name": email.split("@", 1)[0],
+					"send_welcome_email": 0,
+					"user_type": "Website User",
+					"roles": [{"doctype": "Has Role", "role": "Customer"}],
+				}
+			).insert()
+
+		if link_to_customer and not frappe.db.exists(
+			"Portal User", {"parenttype": "Customer", "parent": "_Test Customer", "user": email}
+		):
+			frappe.new_doc(
+				"Portal User",
+				user=email,
+				parent="_Test Customer",
+				parentfield="portal_users",
+				parenttype="Customer",
+			).insert()
+
+		return email
 
 	def test_disallow_due_date_before_transaction_date(self):
 		qo = make_quotation(qty=3, do_not_submit=1)

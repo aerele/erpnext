@@ -9,6 +9,12 @@
 	{{ doc.name }}
 {% endblock %}
 
+{% block script %}
+	{% if doc.doctype == "Quotation" and show_customer_response_actions %}
+		<script>{% include "templates/includes/quotation_response.js" %}</script>
+	{% endif %}
+{% endblock %}
+
 {% block header %}
 	<h3 class="m-0">{{ doc.name }}</h3>
 {% endblock %}
@@ -87,6 +93,38 @@
 		{% endif %}
 
 		<div class="order-container mt-4">
+			{% if doc.doctype == "Quotation" %}
+				<div class="card mb-4">
+					<div class="card-body">
+						<h5>{{ _("Your Response") }}</h5>
+						{% if doc.customer_response in ("Accepted", "Rejected") %}
+							<p class="mb-1">
+								<span class="indicator-pill {{ 'green' if doc.customer_response == 'Accepted' else 'red' }}">
+									{{ _(doc.customer_response) }}
+								</span>
+							</p>
+							{% if doc.customer_response_note %}
+								<p class="text-muted mb-1">{{ doc.customer_response_note | e }}</p>
+							{% endif %}
+							{% if doc.customer_responded_on %}
+								<small class="text-muted">
+									{{ frappe.utils.format_datetime(doc.customer_responded_on, "medium") }}
+								</small>
+							{% endif %}
+						{% elif show_customer_response_actions %}
+							<textarea id="customer-response-note" class="form-control mb-3" maxlength="1000"
+								placeholder="{{ _('Add an optional note') }}"></textarea>
+							<button type="button" class="btn btn-primary btn-sm quotation-response"
+								data-response="Accepted">{{ _("Accept") }}</button>
+							<button type="button" class="btn btn-danger btn-sm quotation-response"
+								data-response="Rejected">{{ _("Reject") }}</button>
+						{% else %}
+							<p class="text-muted mb-0">{{ _("This quotation is no longer awaiting a response.") }}</p>
+						{% endif %}
+					</div>
+				</div>
+			{% endif %}
+
 			<!-- items -->
 			<div class="w-100">
 				<div class="order-items order-item-header mb-1 row text-muted">

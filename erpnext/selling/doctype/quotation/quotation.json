@@ -131,6 +131,12 @@
   "column_break_fozg",
   "utm_campaign",
   "utm_content",
+  "customer_response_section",
+  "customer_response",
+  "customer_response_note",
+  "column_break_customer_response",
+  "customer_responded_on",
+  "customer_responded_by",
   "additional_info_section",
   "status",
   "customer_group",
@@ -856,6 +862,51 @@
    "reqd": 1
   },
   {
+   "collapsible": 1,
+   "fieldname": "customer_response_section",
+   "fieldtype": "Section Break",
+   "label": "Customer Response"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "Pending",
+   "fieldname": "customer_response",
+   "fieldtype": "Select",
+   "label": "Customer Response",
+   "no_copy": 1,
+   "options": "Pending\nAccepted\nRejected",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "customer_response_note",
+   "fieldtype": "Small Text",
+   "label": "Customer Response Note",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_customer_response",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "customer_responded_on",
+   "fieldtype": "Datetime",
+   "label": "Customer Responded On",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "customer_responded_by",
+   "fieldtype": "Link",
+   "label": "Customer Responded By",
+   "no_copy": 1,
+   "options": "User",
+   "read_only": 1
+  },
+  {
    "fieldname": "enq_det",
    "fieldtype": "Text",
    "hidden": 1,
@@ -1145,7 +1196,7 @@
  "idx": 82,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-08-12 12:00:00.000000",
+ "modified": "2026-08-26 13:56:49.462342",
  "modified_by": "Administrator",
  "module": "Selling",
  "name": "Quotation",
