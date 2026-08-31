@@ -32,37 +32,25 @@ class SerialBatchBundleService:
 		self.doc = doc
 
 	def validate_warehouse_of_sabb(self):
-		is_internal_transfer = self.doc.is_internal_transfer()
+		if self.doc.is_internal_transfer():
+			return
+
 		doc_before_save = self.doc.get_doc_before_save()
-		bundle_details = {}
 
 		for row in self.doc.items:
-			for fieldname in ("serial_and_batch_bundle", "rejected_serial_and_batch_bundle"):
-				bundle = row.get(fieldname)
-				if not bundle:
-					continue
+			if not row.get("serial_and_batch_bundle"):
+				continue
 
-				if bundle not in bundle_details:
-					bundle_details[bundle] = frappe.db.get_value(
-						"Serial and Batch Bundle",
-						bundle,
-						["company", "type_of_transaction", "warehouse", "has_serial_no"],
-						as_dict=True,
-					)
-
-				sabb_details = bundle_details[bundle]
-				if sabb_details and sabb_details.company != self.doc.company:
-					frappe.throw(
-						_(
-							"Row #{0}: Company {1} does not match with the company {2} in Serial and Batch Bundle {3}."
-						).format(row.idx, self.doc.company, sabb_details.company, bundle)
-					)
-
-			sabb_details = bundle_details.get(row.get("serial_and_batch_bundle"))
+			sabb_details = frappe.db.get_value(
+				"Serial and Batch Bundle",
+				row.serial_and_batch_bundle,
+				["type_of_transaction", "warehouse", "has_serial_no"],
+				as_dict=True,
+			)
 			if not sabb_details:
 				continue
 
-			if is_internal_transfer or sabb_details.type_of_transaction != "Outward":
+			if sabb_details.type_of_transaction != "Outward":
 				continue
 
 			warehouse = row.get("warehouse") or row.get("s_warehouse")

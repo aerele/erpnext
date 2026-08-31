@@ -945,6 +945,9 @@ class SerialandBatchBundle(Document):
 		if not self.voucher_no or self.voucher_no != row.parent:
 			values_to_set["voucher_no"] = row.parent
 
+		if self.company != parent.company:
+			values_to_set["company"] = parent.company
+
 		self.db_set("is_cancelled", 0)
 
 		if self.voucher_type != parent.doctype:
