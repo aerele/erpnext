@@ -711,7 +711,6 @@ class TestSerialandBatchBundle(ERPNextTestSuite):
 
 	def test_serial_and_batch_bundle_company(self):
 		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
-		from erpnext.stock.services.serial_batch_bundle_service import SerialBatchBundleService
 
 		item = make_item(
 			"Test Serial and Batch Bundle Company Item",
@@ -750,17 +749,9 @@ class TestSerialandBatchBundle(ERPNextTestSuite):
 		self.assertEqual(sn_doc.company, "_Test Company")
 
 		pr.company = "_Test Company 1"
-		for fieldname in ("serial_and_batch_bundle", "rejected_serial_and_batch_bundle"):
-			item_row.serial_and_batch_bundle = None
-			item_row.rejected_serial_and_batch_bundle = None
-			item_row.set(fieldname, sn_doc.name)
-
-			with self.subTest(fieldname=fieldname):
-				with self.assertRaisesRegex(
-					frappe.ValidationError,
-					"Company _Test Company 1 does not match with the company _Test Company",
-				):
-					SerialBatchBundleService(pr).validate_warehouse_of_sabb()
+		sn_doc.set_serial_and_batch_values(pr, item_row)
+		sn_doc.reload()
+		self.assertEqual(sn_doc.company, "_Test Company 1")
 
 	def test_auto_cancel_serial_and_batch(self):
 		item_code = make_item(
