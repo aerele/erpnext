@@ -155,6 +155,17 @@ class SerialBatchBundle:
 			}
 		).make_serial_and_batch_bundle()
 
+		if self.sle.actual_qty < 0 and sn_doc.name and len({d.batch_no for d in sn_doc.entries}) > 1:
+			batches_summary = ", ".join(
+				f"{bold(d.batch_no)} ({flt(abs(d.qty))})" for d in sn_doc.entries
+			)
+			frappe.msgprint(
+				_("Serial and Batch Bundle {0} created for the batches: {1}.").format(
+					bold(sn_doc.name), batches_summary
+				),
+				indicator="blue",
+			)
+
 		self.set_serial_and_batch_bundle(sn_doc)
 
 	def validate_actual_qty(self, sn_doc):

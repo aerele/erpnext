@@ -327,34 +327,72 @@ def update_stock(ctx, out, doc=None):
 
 		qty = out.stock_qty
 		batches = []
+		qty_spans_batches = False
 		if out.has_batch_no and not ctx.get("batch_no"):
 			batches = get_available_batches(kwargs)
 			if doc:
 				filter_batches(batches, doc)
 
+			precision = frappe.get_precision("Stock Ledger Entry", "actual_qty")
+			remaining_qty = qty
+			batches_to_pick = []
 			for batch_no, batch_qty in batches.items():
+				if flt(remaining_qty, precision) <= 0:
+					break
+
+				if flt(batch_qty, precision) <= 0:
+					continue
+
+				# pick only what is required from each batch so the plan shows
+				# exactly what the submit-time bundle will consume
+				picked_qty = min(flt(batch_qty), flt(remaining_qty))
+				batches_to_pick.append((batch_no, picked_qty))
+				remaining_qty = flt(remaining_qty - flt(batch_qty), precision)
+
+			batches_summary = " + ".join(f"{b} ({flt(q)} {out.stock_uom})" for b, q in batches_to_pick)
+
+			if flt(remaining_qty, precision) > 0:
+				frappe.throw(
+					_(
+						"Required qty {0} is not available in the batches of the warehouse {1}. Available: {2}. Please add sufficient qty in the warehouse."
+					).format(qty, frappe.bold(out.warehouse), batches_summary or 0),
+					title=_("Insufficient Batch Stock"),
+				)
+
+			if len(batches_to_pick) == 1:
+				# a single batch can fulfil the required qty
+				batch_no = batches_to_pick[0][0]
+				out.update({"batch_no": batch_no, "actual_batch_qty": qty})
 				rate = get_batch_based_item_price(
 					{"price_list": doc.get("selling_price_list"), "uom": out.uom, "batch_no": batch_no},
 					out.item_code,
 				)
-				if batch_qty >= qty:
-					out.update({"batch_no": batch_no, "actual_batch_qty": qty})
-					if rate:
-						out.update({"rate": rate, "price_list_rate": rate})
-					break
-				else:
-					qty -= batch_qty
-
-				out.update({"batch_no": batch_no, "actual_batch_qty": batch_qty})
 				if rate:
 					out.update({"rate": rate, "price_list_rate": rate})
+			elif len(batches_to_pick) > 1:
+				# required qty spans multiple batches, the row cannot hold more than one
+				# batch; leave batch_no empty so that the split bundle is auto-created
+				# in FEFO order on submit
+				qty_spans_batches = True
+				# at submit the split is announced by the auto-created Serial and
+				# Batch Bundle message; repeating the plan here would duplicate it
+				if not (doc and doc.get("docstatus") == 1):
+					frappe.msgprint(
+						_(
+							"Required qty {0} is not fully available in the first batch. Batches will be picked in {1} order on submit: {2}."
+						).format(qty, frappe.bold(kwargs.based_on or "FIFO"), batches_summary),
+						indicator="blue",
+					)
 
 		if out.has_serial_no and out.has_batch_no and has_incorrect_serial_nos(ctx, out):
-			kwargs["batches"] = [ctx.get("batch_no")] if ctx.get("batch_no") else [out.get("batch_no")]
-			serial_nos = get_serial_nos_for_outward(kwargs)
-			serial_nos = get_filtered_serial_nos(serial_nos, doc)
+			# batch_no stays empty when the qty spans multiple batches; the
+			# submit-time bundle then picks serial nos along with the batch split
+			if not qty_spans_batches:
+				kwargs["batches"] = [ctx.get("batch_no")] if ctx.get("batch_no") else [out.get("batch_no")]
+				serial_nos = get_serial_nos_for_outward(kwargs)
+				serial_nos = get_filtered_serial_nos(serial_nos, doc)
 
-			out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
+				out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
 
 		elif out.has_serial_no and not ctx.get("serial_no"):
 			serial_nos = get_serial_nos_for_outward(kwargs)
