@@ -754,8 +754,10 @@ class TestItem(ERPNextTestSuite):
 		)
 
 		self.assertEqual(item_doc.uoms[0].uom, "Carat")
+		self.assertEqual(item_doc.uoms[0].target_uom, "Gram")
 		self.assertEqual(item_doc.uoms[0].conversion_factor, 0.2)
 		self.assertEqual(item_doc.uoms[1].uom, "Kg")
+		self.assertEqual(item_doc.uoms[1].target_uom, "Gram")
 		self.assertEqual(item_doc.uoms[1].conversion_factor, 1000)
 
 	def test_item_uom_conversion_factor_overrides_global_factor(self):
