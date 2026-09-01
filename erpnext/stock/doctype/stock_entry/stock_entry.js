@@ -1420,9 +1420,47 @@ erpnext.stock.StockEntry = class StockEntry extends erpnext.stock.StockControlle
 
 			erpnext.accounts.dimensions.update_dimension(this.frm, this.frm.doctype);
 			this.set_default_account("cost_center", "cost_center");
+			this.set_item_expense_accounts_for_company();
 
 			this.frm.refresh_fields("items");
 		}
+	}
+
+	set_item_expense_accounts_for_company() {
+		const company = this.frm.doc.company;
+
+		(this.frm.doc.items || []).forEach((row) => {
+			if (!row.item_code) return;
+
+			this.frm.call({
+				doc: this.frm.doc,
+				method: "get_item_details",
+				args: {
+					args: {
+						item_code: row.item_code,
+						warehouse: cstr(row.s_warehouse) || cstr(row.t_warehouse),
+						transfer_qty: row.transfer_qty,
+						serial_no: row.serial_no,
+						batch_no: row.batch_no,
+						bom_no: row.bom_no,
+						expense_account: null,
+						cost_center: null,
+						company,
+						qty: row.qty,
+						voucher_type: this.frm.doc.doctype,
+						voucher_no: row.name,
+						allow_zero_valuation: 1,
+					},
+				},
+				callback: (r) => {
+					if (r.exc || this.frm.doc.company !== company) return;
+
+					frappe.model.set_value(row.doctype, row.name, {
+						expense_account: r.message?.expense_account,
+					});
+				},
+			});
+		});
 	}
 
 	set_default_account(company_fieldname, fieldname) {
