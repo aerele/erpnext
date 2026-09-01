@@ -113,6 +113,8 @@ def make_purchase_receipt(
 			"Purchase Taxes and Charges": {
 				"doctype": "Purchase Taxes and Charges",
 				"reset_value": True,
+				# order level withholding is deducted at invoicing, not on each receipt
+				"condition": lambda doc: not doc.is_tax_withholding_account,
 			},
 		},
 		postprocess=post_process,
