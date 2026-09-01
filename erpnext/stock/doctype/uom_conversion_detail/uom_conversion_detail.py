@@ -18,6 +18,7 @@ class UOMConversionDetail(Document):
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
+		target_uom: DF.Link
 		uom: DF.Link
 	# end: auto-generated types
 
