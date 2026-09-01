@@ -153,8 +153,9 @@ def add_po_items_to_pr(scr_doc, target_doc):
 			if item.fg_item != item_code:
 				continue
 
-			qty = (item.stock_qty - item.received_qty) * fg_qty / item.fg_item_qty
-			if qty:
+			# service qty for this receipt only, same ratio as the mapped Purchase Order Item branch
+			qty = flt(item.qty) * fg_qty / flt(item.fg_item_qty)
+			if qty > 0:
 				target_doc.append(
 					"items",
 					{
@@ -162,6 +163,8 @@ def add_po_items_to_pr(scr_doc, target_doc):
 						"item_name": item.item_name,
 						"description": item.description,
 						"qty": qty,
+						"uom": item.uom,
+						"conversion_factor": item.conversion_factor,
 						"rate": item.rate,
 						"warehouse": item.warehouse,
 						"purchase_order": item.parent,
