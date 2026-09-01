@@ -6,6 +6,20 @@ frappe.provide("erpnext.item");
 const SALES_DOCTYPES = ["Quotation", "Sales Order", "Delivery Note", "Sales Invoice"];
 const PURCHASE_DOCTYPES = ["Purchase Order", "Purchase Receipt", "Purchase Invoice"];
 
+const set_uom_conversion_target = (frm) => {
+	let refresh_uoms = false;
+	(frm.doc.uoms || []).forEach((row) => {
+		if (row.target_uom !== frm.doc.stock_uom) {
+			row.target_uom = frm.doc.stock_uom;
+			refresh_uoms = true;
+		}
+	});
+
+	if (refresh_uoms) {
+		frm.refresh_field("uoms");
+	}
+};
+
 const virtual_field_map = {
 	default_warehouse: "vf_default_warehouse",
 	default_price_list: "vf_default_price_list",
@@ -166,6 +180,7 @@ frappe.ui.form.on("Item", {
 
 	refresh: function (frm) {
 		frm.trigger("toggle_has_serial_batch_fields");
+		set_uom_conversion_target(frm);
 
 		if (frappe.defaults.get_default("item_naming_by") != "Naming Series" || frm.doc.variant_of) {
 			frm.toggle_display("naming_series", false);
@@ -1612,6 +1627,7 @@ $.extend(erpnext.item, {
 frappe.ui.form.on("UOM Conversion Detail", {
 	uom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
+		frappe.model.set_value(cdt, cdn, "target_uom", frm.doc.stock_uom);
 		if (row.uom) {
 			frappe.call({
 				method: "erpnext.stock.doctype.item.item.get_uom_conv_factor",

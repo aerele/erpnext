@@ -416,7 +416,10 @@ class Item(Document):
 		uoms_list = [d.uom for d in self.get("uoms")]
 
 		if self.stock_uom not in uoms_list:
-			self.append("uoms", {"uom": self.stock_uom, "conversion_factor": 1})
+			self.append("uoms", {"uom": self.stock_uom, "target_uom": self.stock_uom, "conversion_factor": 1})
+
+		for row in self.get("uoms"):
+			row.target_uom = self.stock_uom
 
 	def validate_item_tax_net_rate_range(self):
 		for tax in self.get("taxes"):
