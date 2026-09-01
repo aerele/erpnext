@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import add_days
 
 from erpnext.stock.get_item_details import get_item_details
 from erpnext.tests.utils import ERPNextTestSuite
@@ -457,3 +458,255 @@ class TestGetItemDetail(ERPNextTestSuite):
 			frappe.set_user("Administrator")
 			frappe.db.set_single_value("Buying Settings", "maintain_same_rate", original)
 			frappe.clear_cache(doctype="Buying Settings")
+
+	def _setup_batch_item_with_stock(self, batches):
+		from erpnext.stock.doctype.item.test_item import make_item
+		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+
+		item = make_item(
+			properties={
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "FEFO-TAP-.#####",
+			},
+		)
+
+		for qty, expiry_date in batches:
+			se = make_stock_entry(
+				item_code=item.name, target="_Test Warehouse - _TC", qty=qty, rate=100, purpose="Material Receipt"
+			)
+			batch_no = se.items[0].batch_no or frappe.db.get_value(
+				"Serial and Batch Entry", {"parent": se.items[0].serial_and_batch_bundle}, "batch_no"
+			)
+			frappe.db.set_value("Batch", batch_no, "expiry_date", expiry_date)
+
+		return item.name
+
+	def _get_outbound_context(self, item_code, qty, doctype="Delivery Note"):
+		ctx = frappe._dict(
+			{
+				"item_code": item_code,
+				"doctype": doctype,
+				"warehouse": "_Test Warehouse - _TC",
+				"company": "_Test Company",
+				"qty": qty,
+				"stock_qty": qty,
+				"conversion_factor": 1,
+				"use_serial_batch_fields": 1,
+				"update_stock": 1,
+				"currency": "INR",
+				"conversion_rate": 1.0,
+				"price_list": "_Test Price List",
+				"price_list_currency": "INR",
+				"plc_conversion_rate": 1.0,
+				"transaction_date": None,
+				"name": None,
+				"ignore_pricing_rule": 1,
+			}
+		)
+		if doctype == "POS Invoice":
+			ctx.is_pos = 1
+		return ctx
+
+	def _enable_expiry_based_pick(self):
+		original_based_on = frappe.db.get_single_value("Stock Settings", "pick_serial_and_batch_based_on")
+		original_auto_create = frappe.db.get_single_value(
+			"Stock Settings", "auto_create_serial_and_batch_bundle_for_outward"
+		)
+
+		frappe.db.set_single_value("Stock Settings", "pick_serial_and_batch_based_on", "Expiry")
+		frappe.db.set_single_value("Stock Settings", "auto_create_serial_and_batch_bundle_for_outward", 1)
+
+		return original_based_on, original_auto_create
+
+	def _restore_expiry_based_pick(self, originals):
+		original_based_on, original_auto_create = originals
+		frappe.db.set_single_value("Stock Settings", "pick_serial_and_batch_based_on", original_based_on)
+		frappe.db.set_single_value(
+			"Stock Settings", "auto_create_serial_and_batch_bundle_for_outward", original_auto_create
+		)
+
+	def _capture_msgprint(self):
+		messages = []
+		original_msgprint = frappe.msgprint
+
+		def capture(msg, **kwargs):
+			messages.append(msg if isinstance(msg, str) else getattr(msg, "message", str(msg)))
+
+		frappe.msgprint = capture
+		return messages, original_msgprint
+
+	def test_expiry_based_pick_spans_multiple_batches(self):
+		originals = self._enable_expiry_based_pick()
+
+		try:
+			# earliest expiry first: 2 + 10 covers qty 5; the third batch must stay untouched
+			item_code = self._setup_batch_item_with_stock(
+				[(2, add_days(None, 3)), (10, add_days(None, 9)), (14, add_days(None, 30))]
+			)
+			batches = frappe.get_all("Batch", filters={"item": item_code}, fields=["name", "expiry_date"])
+			batch_a, batch_b, batch_c = [d.name for d in sorted(batches, key=lambda d: d.expiry_date)]
+
+			messages, original_msgprint = self._capture_msgprint()
+			try:
+				details = get_item_details(
+					self._get_outbound_context(item_code, 5),
+					doc={"doctype": "Delivery Note", "selling_price_list": "_Test Price List", "items": []},
+				)
+			finally:
+				frappe.msgprint = original_msgprint
+
+			# row must not be pinned to an unfulfillable single batch
+			self.assertIsNone(details.get("batch_no"))
+			self.assertTrue(messages, "an informational message about the split plan is expected")
+			# plan must show only the qty actually picked from each batch, not the full availability
+			self.assertIn(f"{batch_a} (2.0 Nos)", messages[0])
+			self.assertIn(f"{batch_b} (3.0 Nos)", messages[0])
+			self.assertNotIn(batch_c, messages[0])
+
+			# on submit the split bundle is created in expiry order
+			dn = frappe.get_doc(
+				{
+					"doctype": "Delivery Note",
+					"customer": "_Test Customer",
+					"company": "_Test Company",
+					"selling_price_list": "_Test Price List",
+					"currency": "INR",
+					"items": [
+						{
+							"item_code": item_code,
+							"qty": 5,
+							"rate": 100,
+							"warehouse": "_Test Warehouse - _TC",
+							"use_serial_batch_fields": 1,
+						}
+					],
+				}
+			)
+			dn.insert()
+			submit_messages, original_msgprint = self._capture_msgprint()
+			try:
+				dn.submit()
+			finally:
+				frappe.msgprint = original_msgprint
+			dn.reload()
+
+			entries = frappe.get_all(
+				"Serial and Batch Entry",
+				filters={"parent": dn.items[0].serial_and_batch_bundle},
+				fields=["batch_no", "qty"],
+				order_by="idx",
+			)
+			self.assertEqual(len(entries), 2)
+			self.assertEqual(abs(entries[0].qty), 2)
+			self.assertEqual(abs(entries[1].qty), 3)
+			self.assertEqual(entries[0].batch_no, batch_a)
+			self.assertEqual(entries[1].batch_no, batch_b)
+
+			# the submit flow announces the created bundle with its batches
+			bundle_messages = [
+				m
+				for m in submit_messages
+				if "Serial and Batch Bundle" in m and "created for the batches" in m
+			]
+			self.assertTrue(bundle_messages, "submit must announce the created bundle")
+			self.assertIn(batch_a, bundle_messages[0])
+			self.assertIn(batch_b, bundle_messages[0])
+			# the fetch-time split plan is not repeated at submit
+			self.assertFalse(
+				[m for m in submit_messages if "Batches will be picked" in m],
+				"split plan must not be repeated at submit",
+			)
+
+			# expiry order: batch with the earliest expiry is consumed first
+			expiries = frappe.get_all(
+				"Batch", filters={"name": ["in", [e.batch_no for e in entries]]}, fields=["name", "expiry_date"]
+			)
+			expiry_map = {d.name: d.expiry_date for d in expiries}
+			self.assertLess(expiry_map[entries[0].batch_no], expiry_map[entries[1].batch_no])
+
+			# the third batch is not used at all
+			from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+			self.assertEqual(get_batch_qty(batch_c, "_Test Warehouse - _TC", item_code), 14)
+		finally:
+			self._restore_expiry_based_pick(originals)
+
+	def test_expiry_based_pick_single_batch_assigns_batch_no(self):
+		originals = self._enable_expiry_based_pick()
+
+		try:
+			item_code = self._setup_batch_item_with_stock([(2, add_days(None, 3)), (3, add_days(None, 9))])
+
+			details = get_item_details(
+				self._get_outbound_context(item_code, 2),
+				doc={"doctype": "Delivery Note", "selling_price_list": "_Test Price List", "items": []},
+			)
+
+			# qty fits in the first-expiry batch, so it is assigned as before the fix
+			batches = frappe.get_all("Batch", filters={"item": item_code}, fields=["name", "expiry_date"])
+			first_expiry_batch = sorted(batches, key=lambda d: d.expiry_date)[0].name
+			self.assertEqual(details.get("batch_no"), first_expiry_batch)
+		finally:
+			self._restore_expiry_based_pick(originals)
+
+	def test_insufficient_batch_stock_throws_on_fetch(self):
+		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+
+		originals = self._enable_expiry_based_pick()
+
+		try:
+			item_code = self._setup_batch_item_with_stock([(2, add_days(None, 3)), (3, add_days(None, 9))])
+
+			# only 5 available, so qty 6 must fail at fetch time, not at submit
+			make_stock_entry(item_code=item_code, source="_Test Warehouse - _TC", qty=1, purpose="Material Issue")
+
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				get_item_details(
+					self._get_outbound_context(item_code, 6),
+					doc={"doctype": "Delivery Note", "selling_price_list": "_Test Price List", "items": []},
+				)
+			self.assertIn("not available in the batches", str(ctx.exception))
+		finally:
+			self._restore_expiry_based_pick(originals)
+
+	def test_pos_invoice_expiry_based_pick_spans_batches(self):
+		originals = self._enable_expiry_based_pick()
+
+		try:
+			item_code = self._setup_batch_item_with_stock([(2, add_days(None, 3)), (10, add_days(None, 9))])
+
+			messages, original_msgprint = self._capture_msgprint()
+			try:
+				details = get_item_details(
+					self._get_outbound_context(item_code, 5, doctype="POS Invoice"),
+					doc={"doctype": "POS Invoice", "selling_price_list": "_Test Price List", "items": []},
+				)
+			finally:
+				frappe.msgprint = original_msgprint
+
+			self.assertIsNone(details.get("batch_no"))
+			self.assertTrue(messages, "an informational message about the split plan is expected")
+		finally:
+			self._restore_expiry_based_pick(originals)
+
+	def test_sales_invoice_with_update_stock_expiry_based_pick_spans_batches(self):
+		originals = self._enable_expiry_based_pick()
+
+		try:
+			item_code = self._setup_batch_item_with_stock([(2, add_days(None, 3)), (10, add_days(None, 9))])
+
+			messages, original_msgprint = self._capture_msgprint()
+			try:
+				details = get_item_details(
+					self._get_outbound_context(item_code, 5, doctype="Sales Invoice"),
+					doc={"doctype": "Sales Invoice", "selling_price_list": "_Test Price List", "items": []},
+				)
+			finally:
+				frappe.msgprint = original_msgprint
+
+			self.assertIsNone(details.get("batch_no"))
+			self.assertTrue(messages, "an informational message about the split plan is expected")
+		finally:
+			self._restore_expiry_based_pick(originals)
