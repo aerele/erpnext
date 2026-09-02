@@ -4600,6 +4600,101 @@ class TestWorkOrder(ERPNextTestSuite):
 
 		self.assertRaises(frappe.ValidationError, transfer_entry.submit)
 
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enforce_work_order_transfer_pool": 1})
+	@ERPNextTestSuite.change_settings(
+		"Manufacturing Settings",
+		{"backflush_raw_materials_based_on": "BOM", "make_serial_no_batch_from_work_order": 0},
+	)
+	def test_work_order_transfer_pool_for_batched_raw_material(self):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import (
+			make_stock_entry as make_stock_entry_test_record,
+		)
+
+		source_warehouse = "Stores - _TC"
+		wip_warehouse = "Work In Progress - _TC"
+		finished_goods_warehouse = "Finished Goods - _TC"
+		finished_item = make_item(properties={"is_stock_item": 1}).name
+		raw_material = make_item(
+			properties={
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "TEST-WO-POOL-.#####",
+			}
+		).name
+		bom = make_bom(
+			item=finished_item,
+			raw_materials=[raw_material],
+			source_warehouse=source_warehouse,
+		)
+
+		def add_batch_stock(qty):
+			batch = frappe.get_doc(
+				{
+					"doctype": "Batch",
+					"batch_id": frappe.generate_hash(length=10),
+					"item": raw_material,
+				}
+			).insert()
+			make_stock_entry_test_record(
+				item_code=raw_material,
+				target=source_warehouse,
+				qty=qty,
+				basic_rate=100,
+				batch_no=batch.name,
+			)
+			return batch.name
+
+		batch_a = add_batch_stock(20)
+		batch_b1 = add_batch_stock(12)
+		batch_b2 = add_batch_stock(8)
+
+		def make_work_order():
+			return make_wo_order_test_record(
+				production_item=finished_item,
+				bom_no=bom.name,
+				qty=20,
+				reserve_stock=0,
+				source_warehouse=source_warehouse,
+				wip_warehouse=wip_warehouse,
+				fg_warehouse=finished_goods_warehouse,
+			)
+
+		work_order_a = make_work_order()
+		work_order_b = make_work_order()
+
+		def transfer_batch(work_order, batch, qty):
+			transfer = frappe.get_doc(
+				make_stock_entry(work_order.name, "Material Transfer for Manufacture", qty)
+			)
+			row = next(row for row in transfer.items if row.s_warehouse)
+			row.use_serial_batch_fields = 1
+			row.batch_no = batch
+			transfer.insert()
+			transfer.submit()
+
+		transfer_batch(work_order_a, batch_a, 20)
+		transfer_batch(work_order_b, batch_b1, 12)
+		transfer_batch(work_order_b, batch_b2, 8)
+
+		manufacture = frappe.get_doc(make_stock_entry(work_order_b.name, "Manufacture", 20))
+		manufacture_batches = {row.batch_no: row.qty for row in manufacture.items if row.s_warehouse}
+		self.assertEqual(manufacture_batches, {batch_b1: 12, batch_b2: 8})
+
+		first_raw_material = next(row for row in manufacture.items if row.s_warehouse)
+		first_raw_material.batch_no = batch_a
+		with self.assertRaisesRegex(frappe.ValidationError, "is not available in the transfer pool"):
+			manufacture.insert()
+
+		consumption = frappe.get_doc(
+			make_stock_entry(work_order_a.name, "Material Consumption for Manufacture", 20)
+		)
+		consumption_row = next(row for row in consumption.items if row.s_warehouse)
+		self.assertEqual(consumption_row.batch_no, batch_a)
+		consumption_row.batch_no = batch_b1
+		with self.assertRaisesRegex(frappe.ValidationError, "is not available in the transfer pool"):
+			consumption.insert()
+
 	@ERPNextTestSuite.change_settings(
 		"Stock Settings",
 		{"enable_stock_reservation": 1, "allow_partial_reservation": 1},
