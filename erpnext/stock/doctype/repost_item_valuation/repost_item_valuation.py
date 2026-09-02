@@ -663,15 +663,10 @@ def repost_gl_entries(doc):
 	if frappe.get_cached_value("Company", doc.company, "enable_stock_delivered_but_not_billed"):
 		_update_post_delivery_billed_vouchers(transactions)
 
-	enable_separate_reposting_for_gl = frappe.db.get_single_value(
-		"Stock Reposting Settings", "enable_separate_reposting_for_gl"
-	)
-
-	if (
-		enable_separate_reposting_for_gl
-		and doc.based_on == "Item and Warehouse"
-		and not doc.repost_only_accounting_ledgers
-	):
+	# An item-wise repost has only reposted its own item's stock ledger entries, but the
+	# general ledger is per voucher. Rebuilding it here would read the sibling items'
+	# not-yet-reposted entries, so always defer it until those reposts have completed.
+	if doc.based_on == "Item and Warehouse" and not doc.repost_only_accounting_ledgers:
 		make_reposting_for_accounting_ledgers(
 			transactions,
 			doc.company,
