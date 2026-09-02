@@ -8,10 +8,12 @@ import frappe
 from frappe.utils import add_days, add_to_date, flt, now, nowdate, today
 
 from erpnext.accounts import utils as accounts_utils
+from erpnext.accounts.doctype.cost_center.test_cost_center import create_cost_center
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.accounts.utils import repost_gle_for_stock_vouchers
 from erpnext.controllers.stock_controller import create_item_wise_repost_entries
 from erpnext.stock.doctype.item.test_item import make_item
+from erpnext.stock.doctype.purchase_receipt.mapper import make_purchase_invoice
 from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
 from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
 	REPOSTING_JOB_ID_PREFIX,
@@ -864,3 +866,103 @@ class TestRepostItemValuation(ERPNextTestSuite, StockTestMixin):
 		self.assertEqual(kwargs["job_id"], f"{REPOSTING_JOB_ID_PREFIX}RIV-X")
 		self.assertTrue(kwargs["deduplicate"])
 		self.assertTrue(kwargs["continue_reposting"])
+
+	def _drain_repost_queue(self):
+		"""Run queued reposts in scheduler order. Deferred accounting-ledger reposts are
+		created while the queue is draining, so keep going until nothing is left."""
+		from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+			get_repost_item_valuation_entries,
+		)
+
+		frappe.flags.dont_execute_stock_reposts = True
+		try:
+			for _ in range(10):
+				rows = get_repost_item_valuation_entries()
+				if not rows:
+					break
+				for row in rows:
+					execute_reposting_entry(row.name)
+		finally:
+			frappe.flags.dont_execute_stock_reposts = False
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Reposting Settings",
+		{"item_based_reposting": 1, "enable_separate_reposting_for_gl": 0},
+	)
+	@ERPNextTestSuite.change_settings(
+		"Buying Settings",
+		{"set_landed_cost_based_on_purchase_invoice_rate": 1, "maintain_same_rate": 0},
+	)
+	def test_item_wise_repost_values_every_item_of_a_zero_rate_receipt(self):
+		"""Each item-wise repost rebuilds the whole voucher's GL, so it must not read
+		a partially reposted ledger and expense the remaining items as divisional loss."""
+
+		company = "_Test Company with perpetual inventory"
+		warehouse = "Stores - TCP1"
+		create_cost_center(
+			cost_center_name="_Test Repost CC",
+			company=company,
+			parent_cost_center="_Test Company with perpetual inventory - TCP1",
+		)
+
+		items = [self.make_item().name, self.make_item().name]
+		cost_centers = ["Main - TCP1", "_Test Repost CC - TCP1"]
+
+		pr = make_purchase_receipt(
+			company=company,
+			warehouse=warehouse,
+			item_code=items[0],
+			qty=1,
+			rate=0,
+			cost_center=cost_centers[0],
+			do_not_submit=True,
+		)
+		pr.append(
+			"items",
+			{
+				"item_code": items[1],
+				"qty": 6,
+				"rate": 0,
+				"warehouse": warehouse,
+				"cost_center": cost_centers[1],
+			},
+		)
+		pr.submit()
+
+		# let the reposts queue up instead of running inline, then drain them the way the
+		# scheduler does, so the ordering between sibling reposts matches production
+		frappe.flags.dont_execute_stock_reposts = True
+		try:
+			pi = make_purchase_invoice(pr.name)
+			pi.items[0].rate = 11.4
+			pi.items[1].rate = 14.0
+			pi.insert()
+			pi.submit()
+		finally:
+			frappe.flags.dont_execute_stock_reposts = False
+
+		self._drain_repost_queue()
+
+		stock_value = sum(
+			frappe.get_all(
+				"Stock Ledger Entry",
+				filters={"voucher_no": pr.name, "is_cancelled": 0},
+				pluck="stock_value_difference",
+			)
+		)
+		self.assertEqual(flt(stock_value, 2), 95.4)
+
+		stock_account = frappe.get_cached_value("Company", company, "default_inventory_account")
+		gl_entries = frappe.get_all(
+			"GL Entry",
+			filters={"voucher_no": pr.name, "is_cancelled": 0},
+			fields=["account", "debit", "credit"],
+		)
+
+		# the whole receipt value must be capitalised, not partly expensed
+		capitalised = sum(d.debit - d.credit for d in gl_entries if d.account == stock_account)
+		self.assertEqual(flt(capitalised, 2), flt(stock_value, 2))
+
+		expense_account = frappe.get_cached_value("Company", company, "default_expense_account")
+		divisional_loss = sum(d.debit - d.credit for d in gl_entries if d.account == expense_account)
+		self.assertEqual(flt(divisional_loss, 2), 0.0)
