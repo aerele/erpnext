@@ -53,6 +53,7 @@
   "naming_series_prefix",
   "auto_bundle_section",
   "auto_create_serial_and_batch_bundle_for_outward",
+  "enforce_work_order_transfer_pool",
   "do_not_update_serial_batch_on_creation_of_auto_bundle",
   "set_serial_and_batch_bundle_naming_based_on_naming_series",
   "naming_series_preview",
@@ -359,6 +360,13 @@
    "fieldname": "auto_create_serial_and_batch_bundle_for_outward",
    "fieldtype": "Check",
    "label": "Auto create Serial and Batch Bundle for outward"
+  },
+  {
+   "default": "0",
+   "description": "Use only serial and batch numbers transferred for the same Work Order when creating Manufacture or Material Consumption for Manufacture entries.",
+   "fieldname": "enforce_work_order_transfer_pool",
+   "fieldtype": "Check",
+   "label": "Enforce Work Order Transfer Pool"
   },
   {
    "default": "1",

@@ -19,6 +19,7 @@ from erpnext.stock.utils import get_combine_datetime
 
 from .serial_batch import create_serial_and_batch_bundle
 from .stock_entry_base import BaseStockEntry
+from .work_order_transfer_pool import WorkOrderTransferPool
 
 
 class DuplicateEntryForWorkOrderError(frappe.ValidationError):
@@ -299,6 +300,7 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 		self.check_duplicate_entry_for_work_order()
 		self.validate_component_and_quantities()
 		self.validate_finished_good_serial_batch_for_work_order()
+		WorkOrderTransferPool(self.doc, self.wo_doc).validate()
 
 	def validate_finished_good_serial_batch_for_work_order(self):
 		if not (
@@ -514,7 +516,9 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 		if material_consumption and self.raw_materials_already_consumed():
 			return
 
-		if not material_consumption:
+		if WorkOrderTransferPool(self.doc, self.wo_doc).is_enabled():
+			self.add_raw_materials_based_on_transfer()
+		elif not material_consumption:
 			if self.backflush_based_on == "BOM" or self.wo_doc.skip_transfer:
 				self.add_raw_materials_based_on_work_order()
 			else:
@@ -777,11 +781,16 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 			key = (row.item_code, row.warehouse, row.original_item or None)
 			if key not in self.available_materials:
 				self.available_materials[key] = frappe._dict(row)
+				self.available_materials[key].serial_nos = []
+				self.available_materials[key].batches = defaultdict(float)
 			else:
 				self.available_materials[key].qty += row.qty
 
 			if row.serial_and_batch_bundle:
-				self.available_materials[key].update(self.get_sabb_details(row.serial_and_batch_bundle))
+				details = self.get_sabb_details(row.serial_and_batch_bundle)
+				self.available_materials[key].serial_nos.extend(details.serial_nos)
+				for batch_no, qty in details.batches.items():
+					self.available_materials[key].batches[batch_no] += qty
 
 	def get_consumption_entries(self):
 		stock_entry = frappe.qb.DocType("Stock Entry")
@@ -795,7 +804,7 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 			.where(
 				(stock_entry.work_order == self.doc.work_order)
 				& (stock_entry_detail.s_warehouse.isnotnull())
-				& (stock_entry.purpose == "Manufacture")
+				& (stock_entry.purpose.isin(["Manufacture", "Material Consumption for Manufacture"]))
 				& (stock_entry.docstatus == 1)
 			)
 			.orderby(stock_entry_detail.idx)
@@ -837,7 +846,7 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 			self._deduct_consumed_serial_nos(buckets, _details.serial_nos)
 		elif _details.batches:
 			for batch_no, qty in _details.batches.items():
-				self._deduct_consumed_batch_qty(buckets, batch_no, -qty)
+				self._deduct_consumed_batch_qty(buckets, batch_no, qty)
 
 	def _deduct_consumed_serial_nos(self, buckets, serial_nos):
 		for serial_no in serial_nos:
@@ -976,7 +985,7 @@ class ManufactureStockEntry(BaseManufactureStockEntry):
 			if row.serial_no:
 				serial_nos.append(row.serial_no)
 			else:
-				batches[row.batch_no] += row.qty
+				batches[row.batch_no] += abs(row.qty)
 
 		return frappe._dict({"serial_nos": serial_nos, "batches": batches})
 
@@ -1142,9 +1151,12 @@ class MaterialConsumptionForManufactureStockEntry(ManufactureStockEntry):
 		self.validate_work_order()
 		self.validate_manufactured_qty()
 		self.check_if_operations_completed()
+		WorkOrderTransferPool(self.doc, self.wo_doc).validate()
 
 	def add_items(self):
-		if self.backflush_based_on == "BOM" or self.wo_doc.skip_transfer:
+		if WorkOrderTransferPool(self.doc, self.wo_doc).is_enabled():
+			self.add_raw_materials_based_on_transfer()
+		elif self.backflush_based_on == "BOM" or self.wo_doc.skip_transfer:
 			self.add_raw_materials_based_on_work_order()
 		else:
 			self.add_raw_materials_based_on_transfer()
