@@ -227,30 +227,30 @@
 						<td class="text-right">
 							{% if(is_entry) { %}
 								{% if(row.debit != 0) { %}
-									{%= format_currency(row.debit, filters.presentation_currency) %}
+									{%= format_currency(row.debit, filters.presentation_currency || row.account_currency) %}
 								{% } %}
 							{% } else if(i != 0 && !is_last) { %}
-								{%= row.account && format_currency(row.debit, filters.presentation_currency) %}
+								{%= row.account && format_currency(row.debit, filters.presentation_currency || row.account_currency) %}
 							{% } %}
 						</td>
 
 						<td class="text-right">
 							{% if(is_entry) { %}
 								{% if(row.credit != 0) { %}
-									{%= format_currency(row.credit, filters.presentation_currency) %}
+									{%= format_currency(row.credit, filters.presentation_currency || row.account_currency) %}
 								{% } %}
 							{% } else if(i != 0 && !is_last) { %}
-								{%= row.account && format_currency(row.credit, filters.presentation_currency) %}
+								{%= row.account && format_currency(row.credit, filters.presentation_currency || row.account_currency) %}
 							{% } %}
 						</td>
 
 						<td class="text-right {% if(is_last) { %}text-bold{% } %}">
 							{% if(is_last) { %}
-								{%= format_currency(row.balance, filters.presentation_currency) %}
+								{%= format_currency(row.balance, filters.presentation_currency || row.account_currency) %}
 								{% if(row.balance < 0) { %} Cr{% } %}
 								{% if(row.balance > 0) { %} Dr{% } %}
 							{% } else { %}
-								{%= format_currency(row.balance, filters.presentation_currency) %}
+								{%= format_currency(row.balance, filters.presentation_currency || row.account_currency) %}
 							{% } %}
 						</td>
 
