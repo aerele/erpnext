@@ -10,6 +10,7 @@ frappe.ui.form.on("Timesheet", {
 		frm.fields_dict.employee.get_query = function () {
 			return {
 				filters: {
+					company: frm.doc.company,
 					status: "Active",
 				},
 			};
