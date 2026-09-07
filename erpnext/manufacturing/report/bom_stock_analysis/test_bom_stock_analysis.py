@@ -8,7 +8,12 @@ from erpnext.manufacturing.report.bom_stock_analysis.bom_stock_analysis import (
 	execute as bom_stock_analysis_report,
 )
 from erpnext.manufacturing.report.bom_stock_analysis.bom_stock_analysis import get_bom_data
+from erpnext.stock.doctype.inventory_dimension.inventory_dimension import delete_dimension
+from erpnext.stock.doctype.inventory_dimension.test_inventory_dimension import (
+	create_inventory_dimension,
+)
 from erpnext.stock.doctype.item.test_item import make_item
+from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
 from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import (
 	create_stock_reconciliation,
 )
@@ -26,9 +31,106 @@ def fmt_rate(value):
 
 
 class TestBOMStockAnalysis(ERPNextTestSuite):
+	@classmethod
+	def setUpClass(cls):
+		"""Committed: the per-test rollback would otherwise drop these before the next test."""
+		super().setUpClass()
+		cls.dimension = create_inventory_dimension(
+			reference_document="Rack", dimension_name="Rack", apply_to_all_doctypes=1
+		)
+		cls.dimension_rm = make_item(properties={"is_stock_item": 1, "valuation_rate": 10}).name
+		cls.dimension_fg = make_item(properties={"is_stock_item": 1, "valuation_rate": 10}).name
+		cls.dimension_warehouse = create_warehouse("_Test BOM Stock Analysis Rack")
+		cls.dimension_bom = make_bom(
+			item=cls.dimension_fg, quantity=1, raw_materials=[cls.dimension_rm], rm_qty=2
+		)
+
+		for rack, qty in (("Rack 1", 30), ("Rack 2", 20)):
+			receipt = make_stock_entry(
+				item_code=cls.dimension_rm,
+				target=cls.dimension_warehouse,
+				qty=qty,
+				basic_rate=10,
+				purpose="Material Receipt",
+				do_not_save=True,
+			)
+			# an inward Stock Entry line carries the dimension in its target field
+			receipt.items[0].to_rack = rack
+			receipt.save()
+			receipt.submit()
+
+		frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		delete_dimension(cls.dimension.name)
+		frappe.db.commit()
+
 	def setUp(self):
 		self.fg_item, self.rm_items = create_items()
 		self.boms = create_boms(self.fg_item, self.rm_items)
+
+	@property
+	def dimension_wise(self):
+		return {"warehouse": self.dimension_warehouse, "show_dimension_wise_stock": 1}
+
+	def component_row(self, filters):
+		data = bom_stock_analysis_report(filters={"bom": self.dimension_bom.name, **filters})[1]
+		rows, _footer = split_data_and_footer(data)
+		return next(row for row in rows if row.get("item") == self.dimension_rm)
+
+	def test_available_qty_is_restricted_to_the_filtered_dimension(self):
+		row = self.component_row({**self.dimension_wise, "rack": ["Rack 1"]})
+		self.assertEqual(row["available_qty"], fmt_qty(30.0))
+
+		row = self.component_row({**self.dimension_wise, "rack": ["Rack 1", "Rack 2"]})
+		self.assertEqual(row["available_qty"], fmt_qty(50.0))
+
+	def test_dimension_filter_is_ignored_while_the_breakdown_is_off(self):
+		"""depends_on only hides the filter, so its value still reaches the report."""
+		row = self.component_row({"warehouse": self.dimension_warehouse, "rack": ["Rack 1"]})
+		self.assertEqual(row["available_qty"], fmt_qty(50.0))
+
+	def test_dimension_filter_carries_into_the_qty_to_make_columns(self):
+		row = self.component_row({**self.dimension_wise, "qty_to_make": 10, "rack": ["Rack 2"]})
+
+		# 2 per unit x 10 to make = 20 required, against Rack 2's 20 on hand
+		self.assertEqual(row["available_qty"], fmt_qty(20.0))
+		self.assertEqual(row["required_qty"], fmt_qty(20.0))
+		self.assertEqual(row["difference_qty"], fmt_qty(0.0))
+
+	def test_dimension_wise_stock_splits_the_qty_into_sub_rows(self):
+		columns, data = bom_stock_analysis_report(
+			filters={
+				"bom": self.dimension_bom.name,
+				"warehouse": self.dimension_warehouse,
+				"qty_to_make": 10,
+				"show_dimension_wise_stock": 1,
+			}
+		)
+
+		self.assertIn("rack", [column["fieldname"] for column in columns])
+
+		rows, _footer = split_data_and_footer(data)
+		item_index = next(i for i, row in enumerate(rows) if row.get("item") == self.dimension_rm)
+
+		# the item row keeps the total, the sub-rows below it break that total down
+		self.assertEqual(rows[item_index]["available_qty"], fmt_qty(50.0))
+
+		sub_rows = {
+			row["rack"]: row["available_qty"]
+			for row in rows[item_index + 1 :]
+			if not row.get("item") and row.get("rack")
+		}
+		self.assertEqual(sub_rows, {"Rack 1": fmt_qty(30.0), "Rack 2": fmt_qty(20.0)})
+
+	def test_sub_rows_do_not_change_maximum_producible_items(self):
+		def footer(filters):
+			data = bom_stock_analysis_report(filters={"bom": self.dimension_bom.name, **filters})[1]
+			return split_data_and_footer(data)[1].get("description")
+
+		base = {"warehouse": self.dimension_warehouse, "qty_to_make": 10}
+		self.assertEqual(footer(base), footer({**base, "show_dimension_wise_stock": 1}))
 
 	def test_bom_stock_analysis(self):
 		qty_to_make = 10
