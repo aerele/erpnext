@@ -354,6 +354,10 @@ $.extend(erpnext.utils, {
 
 	add_inventory_dimensions: function (report_name, index) {
 		let filters = frappe.query_reports[report_name].filters;
+		// a report that aggregates stock keeps its dimensions behind its breakdown checkbox
+		let depends_on = filters.some((el) => el.fieldname === "show_dimension_wise_stock")
+			? "eval:doc.show_dimension_wise_stock === 1"
+			: "";
 
 		frappe.call({
 			method: "erpnext.stock.doctype.inventory_dimension.inventory_dimension.get_inventory_dimensions",
@@ -367,10 +371,7 @@ $.extend(erpnext.utils, {
 								fieldname: dimension["fieldname"],
 								label: __(dimension["doctype"]),
 								fieldtype: "MultiSelectList",
-								depends_on:
-									report_name === "Stock Balance"
-										? "eval:doc.show_dimension_wise_stock === 1"
-										: "",
+								depends_on: depends_on,
 								get_data: function (txt) {
 									return frappe.db.get_link_options(dimension["doctype"], txt);
 								},

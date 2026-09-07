@@ -28,6 +28,12 @@ frappe.query_reports["BOM Stock Analysis"] = {
 			fieldtype: "Check",
 			default: false,
 		},
+		{
+			fieldname: "show_dimension_wise_stock",
+			label: __("Show Dimension Wise Stock"),
+			fieldtype: "Check",
+			default: false,
+		},
 	],
 	formatter(value, row, column, data, default_formatter) {
 		if (data && data.bold && column.fieldname === "item") {
@@ -58,3 +64,5 @@ frappe.query_reports["BOM Stock Analysis"] = {
 		return value;
 	},
 };
+
+erpnext.utils.add_inventory_dimensions("BOM Stock Analysis", 5);

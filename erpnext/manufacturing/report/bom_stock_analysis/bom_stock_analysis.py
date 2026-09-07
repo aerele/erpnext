@@ -8,6 +8,9 @@ from frappe.utils import flt
 from frappe.utils.data import comma_and
 from pypika.terms import ExistsCriterion
 
+from erpnext.stock.doctype.inventory_dimension.inventory_dimension import get_inventory_dimensions
+from erpnext.stock.doctype.warehouse.warehouse import apply_warehouse_filter
+
 
 def execute(filters=None):
 	filters = filters or {}
@@ -18,7 +21,7 @@ def execute(filters=None):
 		columns = get_columns_without_qty_to_make()
 		data = get_data_without_qty_to_make(filters)
 
-	return columns, data
+	return add_dimension_columns(columns, filters), data
 
 
 def fmt_qty(value):
@@ -32,11 +35,104 @@ def fmt_rate(value):
 	return frappe.utils.fmt_money(value, precision=2, currency=currency)
 
 
+def get_dimensions():
+	"""Inventory Dimensions whose field is actually on Stock Ledger Entry."""
+	return [
+		dimension
+		for dimension in get_inventory_dimensions()
+		if frappe.db.has_column("Stock Ledger Entry", dimension.fieldname)
+	]
+
+
+def get_applied_dimensions(filters):
+	"""Only while the breakdown is on: a depends_on filter keeps its value once hidden."""
+	if not filters.get("show_dimension_wise_stock"):
+		return []
+
+	return [dimension for dimension in get_dimensions() if filters.get(dimension.fieldname)]
+
+
+def add_dimension_columns(columns, filters):
+	"""Show one column per Inventory Dimension, just before the qty it breaks up."""
+	if not filters.get("show_dimension_wise_stock"):
+		return columns
+
+	dimension_columns = [
+		{
+			"fieldname": dimension.fieldname,
+			"label": _(dimension.doctype),
+			"fieldtype": "Link",
+			"options": dimension.doctype,
+			"width": 140,
+		}
+		for dimension in get_dimensions()
+	]
+	if not dimension_columns:
+		return columns
+
+	index = next(
+		(i for i, column in enumerate(columns) if column["fieldname"] == "available_qty"), len(columns)
+	)
+
+	return columns[:index] + dimension_columns + columns[index:]
+
+
+def apply_dimension_filters(query, sle, filters):
+	for dimension in get_applied_dimensions(filters):
+		values = filters.get(dimension.fieldname)
+		if isinstance(values, str):
+			values = [values]
+		query = query.where(sle[dimension.fieldname].isin(values))
+
+	return query
+
+
+def get_dimension_wise_stock(filters, item_codes):
+	"""item_code -> ledger rows carrying its qty per Inventory Dimension value."""
+	dimensions = get_dimensions()
+	if not dimensions or not item_codes:
+		return {}
+
+	sle = frappe.qb.DocType("Stock Ledger Entry")
+	query = (
+		frappe.qb.from_(sle)
+		.select(sle.item_code, Sum(sle.actual_qty).as_("actual_qty"))
+		.where((sle.docstatus < 2) & (sle.is_cancelled == 0) & sle.item_code.isin(item_codes))
+		.groupby(sle.item_code)
+	)
+
+	for dimension in dimensions:
+		query = query.select(sle[dimension.fieldname]).groupby(sle[dimension.fieldname])
+
+	query = apply_warehouse_filter(query, sle, filters)
+	query = apply_dimension_filters(query, sle, filters)
+
+	breakup = {}
+	for row in query.run(as_dict=True):
+		# a dimension value the item has moved fully out of is not stock on hand
+		if flt(row.actual_qty):
+			breakup.setdefault(row.item_code, []).append(row)
+
+	return breakup
+
+
+def get_dimension_row(row, dimensions):
+	"""A sub-row under its item: only the dimension values and their qty, every other cell blank."""
+	dimension_row = {dimension.fieldname: row.get(dimension.fieldname) for dimension in dimensions}
+	dimension_row["available_qty"] = fmt_qty(row.actual_qty)
+
+	return dimension_row
+
+
 def get_data_with_qty_to_make(filters):
 	bom_data = get_bom_data(filters)
 	manufacture_details = get_manufacturer_records()
 	purchase_rates = batch_fetch_purchase_rates(bom_data)
 	qty_to_make = flt(filters.get("qty_to_make"))
+	dimensions = get_dimensions() if filters.get("show_dimension_wise_stock") else []
+	dimension_wise_stock = (
+		get_dimension_wise_stock(filters, [row.item_code for row in bom_data]) if dimensions else {}
+	)
 
 	data = []
 	for row in bom_data:
@@ -66,9 +162,12 @@ def get_data_with_qty_to_make(filters):
 			}
 		)
 
-	min_producible = (
-		min(int(r["_available_qty"] // r["_qty_per_unit"]) for r in data if r["_qty_per_unit"]) if data else 0
-	)
+		for split in dimension_wise_stock.get(row.item_code, []):
+			data.append(get_dimension_row(split, dimensions))
+
+	# sub-rows carry no qty_per_unit, so only the item rows below decide what can be built
+	producible = [int(r["_available_qty"] // r["_qty_per_unit"]) for r in data if r.get("_qty_per_unit")]
+	min_producible = min(producible) if producible else 0
 
 	for row in data:
 		row.pop("_available_qty", None)
@@ -129,6 +228,10 @@ def get_columns_with_qty_to_make():
 
 def get_data_without_qty_to_make(filters):
 	raw_rows = get_producible_fg_items(filters)
+	dimensions = get_dimensions() if filters.get("show_dimension_wise_stock") else []
+	dimension_wise_stock = (
+		get_dimension_wise_stock(filters, [row.item_code for row in raw_rows]) if dimensions else {}
+	)
 
 	data = []
 	for row in raw_rows:
@@ -141,6 +244,9 @@ def get_data_without_qty_to_make(filters):
 				"available_qty": fmt_qty(row.available_qty),
 			}
 		)
+
+		for split in dimension_wise_stock.get(row.item_code, []):
+			data.append(get_dimension_row(split, dimensions))
 
 	min_producible = min((row.producible_qty or 0) for row in raw_rows) if raw_rows else 0
 	# blank spacer row
@@ -190,8 +296,27 @@ def batch_fetch_purchase_rates(bom_data):
 	}
 
 
+def get_sle_stock_qty_by_item(filters):
+	"""Bin holds no Inventory Dimension columns, so dimension-filtered stock has to come off the ledger."""
+	sle = frappe.qb.DocType("Stock Ledger Entry")
+
+	query = (
+		frappe.qb.from_(sle)
+		.select(sle.item_code, Sum(sle.actual_qty).as_("actual_qty"))
+		.where((sle.docstatus < 2) & (sle.is_cancelled == 0))
+		.groupby(sle.item_code)
+	)
+
+	query = apply_warehouse_filter(query, sle, filters)
+
+	return apply_dimension_filters(query, sle, filters)
+
+
 def get_stock_qty_by_item(filters):
 	"""One row per item_code, so joining it to BOM Item cannot multiply either side's sum."""
+	if get_applied_dimensions(filters):
+		return get_sle_stock_qty_by_item(filters)
+
 	bin = frappe.qb.DocType("Bin")
 
 	query = (
@@ -322,38 +447,18 @@ def get_manufacturer_records():
 def get_producible_fg_items(filters):
 	BOM_ITEM = frappe.qb.DocType("BOM Item")
 	BOM = frappe.qb.DocType("BOM")
-	BIN = frappe.qb.DocType("Bin")
-	WH = frappe.qb.DocType("Warehouse")
 
-	warehouse = filters.get("warehouse")
-	if not warehouse:
+	if not filters.get("warehouse"):
 		frappe.throw(_("Warehouse is required to get producible FG Items"))
 
-	warehouse_details = frappe.db.get_value("Warehouse", warehouse, ["lft", "rgt"], as_dict=1)
-
-	if warehouse_details:
-		bin_subquery = (
-			frappe.qb.from_(BIN)
-			.join(WH)
-			.on(BIN.warehouse == WH.name)
-			.select(BIN.item_code, Sum(BIN.actual_qty).as_("actual_qty"))
-			.where((WH.lft >= warehouse_details.lft) & (WH.rgt <= warehouse_details.rgt))
-			.groupby(BIN.item_code)
-		)
-	else:
-		bin_subquery = (
-			frappe.qb.from_(BIN)
-			.select(BIN.item_code, Sum(BIN.actual_qty).as_("actual_qty"))
-			.where(BIN.warehouse == warehouse)
-			.groupby(BIN.item_code)
-		)
+	item_stock = get_stock_qty_by_item(filters).as_("item_stock")
 
 	query = (
 		frappe.qb.from_(BOM_ITEM)
 		.join(BOM)
 		.on(BOM_ITEM.parent == BOM.name)
-		.left_join(bin_subquery)
-		.on(BOM_ITEM.item_code == bin_subquery.item_code)
+		.left_join(item_stock)
+		.on(BOM_ITEM.item_code == item_stock.item_code)
 		.select(
 			BOM_ITEM.item_code,
 			# Sum() below makes this an aggregate query; the other columns are constant per grouped
@@ -361,8 +466,8 @@ def get_producible_fg_items(filters):
 			# description is not: it belongs to the line, so it comes from a representative one below.
 			Max(BOM_ITEM.parent).as_("from_bom_no"),
 			Max(BOM_ITEM.stock_qty / BOM.quantity).as_("qty_per_unit"),
-			Max(IfNull(bin_subquery.actual_qty, 0)).as_("available_qty"),
-			Floor(Max(bin_subquery.actual_qty) / ((Sum(BOM_ITEM.stock_qty)) / Max(BOM.quantity))).as_(
+			Max(IfNull(item_stock.actual_qty, 0)).as_("available_qty"),
+			Floor(Max(item_stock.actual_qty) / ((Sum(BOM_ITEM.stock_qty)) / Max(BOM.quantity))).as_(
 				"producible_qty"
 			),
 		)
