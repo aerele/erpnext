@@ -19,6 +19,81 @@ class TestBlanketOrder(ERPNextTestSuite):
 	def setUp(self):
 		frappe.flags.args = frappe._dict()
 
+	def test_blanket_order_status(self):
+		bo, price_list = make_priced_blanket_order()
+		bo.insert().submit()
+		price_list = frappe.get_doc("Price List", price_list)
+		price_list.db_set("enabled", 0)
+		self.assertEqual(bo.status, "Open")
+		for status in ("Closed", "Open", "Closed"):
+			with self.set_user("Guest"), self.assertRaises(frappe.PermissionError):
+				bo.update_status(status)
+			bo.update_status(status)
+			self.assertEqual(bo.reload().status, status)
+
+		bo.db_set("selling_price_list", "_Test Missing Price List")
+		for status in ("Open", "Closed"):
+			bo.update_status(status)
+			self.assertEqual(bo.reload().status, status)
+		bo.db_set("selling_price_list", price_list.name)
+		price_list.db_set("enabled", 1)
+		bo.to_date = add_months(bo.to_date, 1)
+		bo.save()
+		self.assertEqual(bo.reload().status, "Closed")
+		with self.assertRaises(frappe.ValidationError):
+			bo.update_status("Invalid")
+
+		draft = frappe.copy_doc(bo)
+		draft.docstatus = 0
+		with self.assertRaises(frappe.ValidationError):
+			draft.update_status("Closed")
+		draft.insert()
+		self.assertEqual(draft.status, "Open")
+		with self.assertRaises(frappe.ValidationError):
+			draft.update_status("Closed")
+		bo.cancel()
+		with self.assertRaises(frappe.ValidationError):
+			bo.update_status("Open")
+		self.assertEqual(bo.reload().docstatus, 2)
+		amended = frappe.copy_doc(bo)
+		amended.docstatus = 0
+		amended.amended_from = bo.name
+		amended.insert().submit()
+		self.assertEqual(amended.status, "Open")
+
+	def test_closed_blanket_order_transactions(self):
+		for doctype in ("Sales Order", "Purchase Order", "Quotation"):
+			with self.subTest(doctype=doctype):
+				bo = make_blanket_order(
+					blanket_order_type="Purchasing" if doctype == "Purchase Order" else "Selling"
+				)
+				frappe.flags.args.doctype = doctype
+				order = make_order(bo.name)
+				self.assertEqual(order.status, "Draft")
+				order.items[0].qty = 10
+				if doctype != "Quotation":
+					order.set("delivery_date" if doctype == "Sales Order" else "schedule_date", today())
+				order.insert()
+				bo.update_status("Closed")
+
+				with self.assertRaisesRegex(frappe.ValidationError, "is closed"):
+					make_order(bo.name)
+				with self.assertRaisesRegex(frappe.ValidationError, "is closed"):
+					order.submit()
+				order.reload()
+				order.items[0].against_blanket_order = 0
+				with self.assertRaisesRegex(frappe.ValidationError, "is closed"):
+					order.save()
+
+				bo.update_status("Open")
+				order.reload().submit()
+				# Closing from a stale form must preserve quantities updated by the submitted order.
+				bo.update_status("Closed")
+				self.assertEqual(bo.items[0].ordered_qty, 0 if doctype == "Quotation" else 10)
+				order.cancel()
+				self.assertEqual(bo.reload().status, "Closed")
+				self.assertEqual(bo.items[0].ordered_qty, 0)
+
 	def test_sales_order_creation(self):
 		bo = make_blanket_order(blanket_order_type="Selling")
 
@@ -383,6 +458,7 @@ class TestBlanketOrder(ERPNextTestSuite):
 		transaction_currency = "USD" if company_currency != "USD" else "EUR"
 		blanket_order = make_blanket_order(
 			blanket_order_type="Selling",
+			item_code=make_item().name,
 			currency=transaction_currency,
 			conversion_rate=80,
 		)
@@ -412,6 +488,23 @@ class TestBlanketOrder(ERPNextTestSuite):
 			}
 		)
 		self.assertFalse(details)
+
+		filters["currency"] = transaction_currency
+		context = {
+			"company": blanket_order.company,
+			"currency": transaction_currency,
+			"customer": blanket_order.customer,
+			"doctype": "Sales Order",
+			"item_code": blanket_order.items[0].item_code,
+			"transaction_date": today(),
+		}
+		for status in (None, "", "Closed", "Open"):
+			blanket_order.db_set("status", status)
+			matches = get_blanket_orders("Blanket Order", "", "name", 0, 20, filters)
+			self.assertEqual(blanket_order.name in [row[0] for row in matches], status != "Closed")
+			for name in (None, blanket_order.name):
+				context["blanket_order"] = name
+				self.assertEqual(bool(get_blanket_order_details(context)), status != "Closed")
 
 
 def make_blanket_order(**args):
