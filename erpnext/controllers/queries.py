@@ -813,6 +813,7 @@ def get_blanket_orders(doctype: str, txt: str, searchfield: str, start: int, pag
 			& (bo.blanket_order_type == filters.get("blanket_order_type"))
 			& (bo.company == filters.get("company"))
 			& (bo.docstatus == 1)
+			& (IfNull(bo.status, "") != "Closed")
 		)
 	)
 

@@ -9,6 +9,7 @@ from frappe.utils import getdate, nowdate
 from pypika.terms import ExistsCriterion
 
 from erpnext.controllers.selling_controller import SellingController
+from erpnext.manufacturing.doctype.blanket_order.blanket_order import validate_against_blanket_order
 
 from .mapper import (
 	get_ordered_items,
@@ -146,6 +147,7 @@ class Quotation(SellingController):
 		self.validate_uom_is_integer("stock_uom", "stock_qty")
 		self.validate_uom_is_integer("uom", "qty")
 		self.validate_valid_till()
+		validate_against_blanket_order(self)
 		self.set_customer_name()
 		if self.items:
 			self.with_items = 1

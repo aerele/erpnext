@@ -42,6 +42,7 @@ class BlanketOrder(Document):
 		plc_conversion_rate: DF.Float
 		price_list_currency: DF.Link | None
 		selling_price_list: DF.Link | None
+		status: DF.Literal["Open", "Closed"]
 		supplier: DF.Link | None
 		supplier_name: DF.Data | None
 		tc_name: DF.Link | None
@@ -55,11 +56,33 @@ class BlanketOrder(Document):
 		blanket_order_pricing.set_price_list(self)
 
 	def validate(self):
+		if self.docstatus == 0 or self.is_new():
+			self.status = "Open"
 		self.validate_dates()
 		self.validate_duplicate_items()
 		self.validate_item_qty()
 		self.set_party_item_code()
 		self.set_base_rates()
+
+	@frappe.whitelist(methods=["POST"])
+	def update_status(self, status: str):
+		if self.is_new():
+			frappe.throw(_("Only submitted Blanket Orders can be closed or re-opened."))
+		if status not in ("Open", "Closed"):
+			frappe.throw(_("Status must be Open or Closed."))
+
+		# Ordered quantities can change without updating the parent's modified timestamp.
+		self.flags.for_update = True
+		self.reload()
+		self.check_permission("write")
+		if self.docstatus != 1:
+			frappe.throw(_("Only submitted Blanket Orders can be closed or re-opened."))
+
+		self.db_set("status", status, notify=True)
+
+	def validate_open(self):
+		if self.status == "Closed":
+			frappe.throw(_("Blanket Order {0} is closed.").format(frappe.bold(self.name)))
 
 	def set_currency(self):
 		if self.currency:
@@ -189,6 +212,7 @@ def make_order(source_name: str):
 	doctype = frappe.flags.args.doctype
 
 	def update_doc(source_doc, target_doc, source_parent):
+		source_doc.validate_open()
 		if doctype == "Quotation":
 			target_doc.quotation_to = "Customer"
 			target_doc.party_name = source_doc.customer
@@ -210,6 +234,7 @@ def make_order(source_name: str):
 			"Blanket Order": {
 				"doctype": doctype,
 				"field_no_map": ["naming_series"],
+				"validation": {"docstatus": ["=", 1]},
 				"postprocess": update_doc,
 			},
 			"Blanket Order Item": {
@@ -231,35 +256,42 @@ def make_order(source_name: str):
 
 
 def validate_against_blanket_order(order_doc):
-	if order_doc.doctype in ("Sales Order", "Purchase Order"):
-		order_data = {}
+	if order_doc.doctype not in ("Sales Order", "Purchase Order", "Quotation"):
+		return
 
-		for item in order_doc.get("items"):
-			if item.against_blanket_order and item.blanket_order:
-				if item.blanket_order in order_data:
-					if item.item_code in order_data[item.blanket_order]:
-						order_data[item.blanket_order][item.item_code] += item.qty
-					else:
-						order_data[item.blanket_order][item.item_code] = item.qty
-				else:
-					order_data[item.blanket_order] = {item.item_code: item.qty}
+	order_data = {}
+	for item in order_doc.get("items"):
+		if item.get("blanket_order"):
+			item_data = order_data.setdefault(item.blanket_order, {})
+			if item.against_blanket_order:
+				item_data[item.item_code] = item_data.get(item.item_code, 0) + item.qty
 
-		if order_data:
-			allowance = flt(
-				frappe.db.get_single_value(
-					"Selling Settings" if order_doc.doctype == "Sales Order" else "Buying Settings",
-					"blanket_order_allowance",
-				)
+	if not order_data:
+		return
+
+	allowance = 0
+	if order_doc.doctype != "Quotation":
+		allowance = flt(
+			frappe.db.get_single_value(
+				"Selling Settings" if order_doc.doctype == "Sales Order" else "Buying Settings",
+				"blanket_order_allowance",
 			)
-			for bo_name, item_data in order_data.items():
-				bo_doc = frappe.get_doc("Blanket Order", bo_name)
-				for item in bo_doc.get("items"):
-					if item.item_code in item_data:
-						remaining_qty = item.qty - item.ordered_qty
-						allowed_qty = remaining_qty + (remaining_qty * (allowance / 100))
-						if item.qty and allowed_qty < item_data[item.item_code]:
-							frappe.throw(
-								_(
-									"Item {0} cannot be ordered more than {1} against Blanket Order {2}."
-								).format(item.item_code, allowed_qty, bo_name)
-							)
+		)
+
+	for bo_name in sorted(order_data):
+		bo_doc = frappe.get_doc("Blanket Order", bo_name, for_update=True)
+		bo_doc.validate_open()
+		if order_doc.doctype == "Quotation":
+			continue
+
+		item_data = order_data[bo_name]
+		for item in bo_doc.get("items"):
+			if item.item_code in item_data:
+				remaining_qty = item.qty - item.ordered_qty
+				allowed_qty = remaining_qty + (remaining_qty * (allowance / 100))
+				if item.qty and allowed_qty < item_data[item.item_code]:
+					frappe.throw(
+						_("Item {0} cannot be ordered more than {1} against Blanket Order {2}.").format(
+							item.item_code, allowed_qty, bo_name
+						)
+					)
