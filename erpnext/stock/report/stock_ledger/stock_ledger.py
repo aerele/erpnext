@@ -620,6 +620,7 @@ def get_sle_conditions(filters):
 def get_opening_balance_from_batch(filters, columns, sl_entries):
 	query_filters = {
 		"batch_no": filters.batch_no,
+		"serial_and_batch_bundle": ("is", "not set"),
 		"docstatus": 1,
 		"is_cancelled": 0,
 		"posting_date": ("<", filters.from_date),
