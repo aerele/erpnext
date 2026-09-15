@@ -459,6 +459,7 @@ class Item(Document):
 					"warehouse_reorder_level",
 					"warehouse_reorder_qty",
 					"material_request_type",
+					"create_material_request_as_draft",
 				):
 					n[k] = d.get(k)
 				self.append("reorder_levels", n)

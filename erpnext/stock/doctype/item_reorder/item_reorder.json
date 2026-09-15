@@ -12,7 +12,8 @@
   "warehouse_group",
   "warehouse_reorder_level",
   "warehouse_reorder_qty",
-  "material_request_type"
+  "material_request_type",
+  "create_material_request_as_draft"
  ],
  "fields": [
   {
@@ -56,13 +57,20 @@
    "label": "Material Request Type",
    "options": "Purchase\nTransfer\nMaterial Issue\nManufacture",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Keep auto-created Material Requests in Draft for review. Another request for the same item, warehouse and request type will not be created while a draft is pending.",
+   "fieldname": "create_material_request_as_draft",
+   "fieldtype": "Check",
+   "label": "Create Material Request as Draft"
   }
  ],
  "idx": 1,
  "in_create": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-07-28 15:54:36.089238",
+ "modified": "2026-09-15 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Stock",
  "name": "Item Reorder",

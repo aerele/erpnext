@@ -2,6 +2,7 @@
 {% for mr in mr_list -%}
 <div style="margin-bottom: 30px;">
 	<h4 style="margin-bottom: 5px;">{{ frappe.utils.get_link_to_form("Material Request", mr.name) }}</h4>
+	<p>{{ _("Status") }}: {{ _("Draft") if mr.docstatus == 0 else _("Submitted") }}</p>
 	<table style="width: 100%; border-spacing: 0; border-collapse: collapse;">
 		<thead>
 			<tr>

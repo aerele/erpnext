@@ -34,6 +34,7 @@ def _reorder_item():
 		return
 
 	item_warehouse_projected_qty = get_item_warehouse_projected_qty(items_to_consider)
+	pending_reorder_items = get_pending_reorder_items(items_to_consider)
 
 	def add_to_material_request(**kwargs):
 		if isinstance(kwargs, dict):
@@ -41,6 +42,15 @@ def _reorder_item():
 
 		if kwargs.warehouse not in warehouse_company:
 			# a disabled warehouse
+			return
+
+		request_type = (
+			"Material Transfer"
+			if kwargs.material_request_type == "Transfer"
+			else kwargs.material_request_type
+		)
+		if (kwargs.item_code, kwargs.warehouse, request_type) in pending_reorder_items:
+			# Draft requests do not contribute to projected stock while awaiting approval.
 			return
 
 		reorder_level = flt(kwargs.reorder_level)
@@ -71,6 +81,7 @@ def _reorder_item():
 					"projected_on_hand": projected_qty,
 					"reorder_level": reorder_level,
 					"original_reorder_qty": original_reorder_qty,
+					"create_material_request_as_draft": kwargs.create_material_request_as_draft,
 				}
 			)
 
@@ -85,6 +96,7 @@ def _reorder_item():
 				reorder_level=d.warehouse_reorder_level,
 				reorder_qty=d.warehouse_reorder_qty,
 				material_request_type=d.material_request_type,
+				create_material_request_as_draft=d.create_material_request_as_draft,
 				warehouse_group=d.warehouse_group,
 				item_details=frappe._dict(
 					{
@@ -127,6 +139,7 @@ def get_items_for_reorder() -> dict[str, list]:
 			reorder_table.warehouse,
 			reorder_table.warehouse_group,
 			reorder_table.material_request_type,
+			reorder_table.create_material_request_as_draft,
 			reorder_table.warehouse_reorder_level,
 			reorder_table.warehouse_reorder_qty,
 			item_table.name,
@@ -217,13 +230,9 @@ def create_material_request(material_requests):
 
 	company_wise_mr = frappe._dict({})
 	for request_type in material_requests:
-		for company in material_requests[request_type]:
+		for company, create_as_draft, items in group_items_by_draft(material_requests[request_type]):
 			frappe.db.savepoint("reorder_mr")
 			try:
-				items = material_requests[request_type][company]
-				if not items:
-					continue
-
 				mr = frappe.new_doc("Material Request")
 				mr.update(
 					{
@@ -284,7 +293,8 @@ def create_material_request(material_requests):
 				mr.schedule_date = max(schedule_dates or [nowdate()])
 				mr.flags.ignore_mandatory = True
 				mr.insert()
-				mr.submit()
+				if not create_as_draft:
+					mr.submit()
 				mr_list.append(mr)
 
 				company_wise_mr.setdefault(company, []).append(mr)
@@ -307,6 +317,37 @@ def create_material_request(material_requests):
 		notify_errors(exceptions_list)
 
 	return mr_list
+
+
+def group_items_by_draft(company_wise_items):
+	for company, items in company_wise_items.items():
+		if not items:
+			continue
+		items_by_draft = {}
+		for item in items:
+			create_as_draft = bool(cint(item.get("create_material_request_as_draft")))
+			items_by_draft.setdefault(create_as_draft, []).append(item)
+		for create_as_draft, grouped_items in items_by_draft.items():
+			yield company, create_as_draft, grouped_items
+
+
+def get_pending_reorder_items(item_codes):
+	"""Return item/warehouse/type combinations already awaiting review in auto-created drafts."""
+	material_request = frappe.qb.DocType("Material Request")
+	request_item = frappe.qb.DocType("Material Request Item")
+	rows = (
+		frappe.qb.from_(material_request)
+		.join(request_item)
+		.on(request_item.parent == material_request.name)
+		.select(request_item.item_code, request_item.warehouse, material_request.material_request_type)
+		.where(
+			(material_request.docstatus == 0)
+			& (material_request.auto_created_via_reorder == 1)
+			& (request_item.item_code.isin(list(item_codes)))
+		)
+		.distinct()
+	).run()
+	return set(rows)
 
 
 def send_email_notification(company_wise_mr):

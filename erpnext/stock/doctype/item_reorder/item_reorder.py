@@ -16,6 +16,7 @@ class ItemReorder(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		create_material_request_as_draft: DF.Check
 		material_request_type: DF.Literal["Purchase", "Transfer", "Material Issue", "Manufacture"]
 		parent: DF.Data
 		parentfield: DF.Data
