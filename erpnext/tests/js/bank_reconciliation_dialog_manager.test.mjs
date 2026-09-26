@@ -25,6 +25,12 @@ class Dialog {
     this.hidden = false;
     this.shown = false;
     this.fields_dict = {};
+    this.$wrapper = {
+      parent: null,
+      appendTo(parent) {
+        this.parent = parent;
+      },
+    };
   }
   set_df_property(fieldname, property, value) {
     this.df_properties[fieldname] = {
@@ -65,7 +71,7 @@ function load_dialog_manager({
     synced: [],
     form_handlers: {},
   };
-  const sandbox = { console };
+  const sandbox = { console, document: { body: {} } };
 
   sandbox.frappe = {
     provide(namespace) {
@@ -163,6 +169,33 @@ const withdrawal = {
 };
 
 describe("voucher type registry", () => {
+  it("attaches the dialog before voucher loading on its first opening", () => {
+    const { dialog_manager, sandbox } = load_dialog_manager({
+      bank_transaction: { ...deposit },
+    });
+    const dialog = dialog_manager.dialog;
+    let loaded = false;
+    dialog_manager.get_selected_attributes = () => ["payment_entry"];
+    dialog.set_values = (values) => {
+      Object.assign(dialog.values, values);
+      if (values.payment_entry) {
+        dialog.fields
+          .find((field) => field.fieldname === "payment_entry")
+          .onchange();
+      }
+    };
+    dialog_manager.get_linked_vouchers = () => {
+      assert.equal(dialog.shown, false);
+      assert.equal(dialog.$wrapper.parent, sandbox.document.body);
+      loaded = true;
+    };
+
+    dialog_manager.show_dialog(deposit.name, () => {});
+
+    assert.equal(loaded, true);
+    assert.equal(dialog.shown, true);
+  });
+
   it("keeps types registered before the bundle loaded, after the built-in ones", () => {
     const custom = loan_repayment_type();
     const { registry } = load_dialog_manager({
