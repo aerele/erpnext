@@ -292,6 +292,8 @@ erpnext.accounts.bank_reconciliation.DialogManager = class DialogManager {
 					size: "large",
 					primary_action: (values) => this.reconciliation_dialog_primary_action(values),
 				});
+				// DataTable needs an attached wrapper to create its stylesheet.
+				me.dialog.$wrapper.appendTo(document.body);
 			},
 		});
 	}
