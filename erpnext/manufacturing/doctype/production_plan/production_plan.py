@@ -7,8 +7,6 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
-from erpnext.manufacturing.doctype.bom.bom import validate_bom_no
-
 # Backward-compatible re-exports (moved to mapper.py / services/).
 from erpnext.manufacturing.doctype.production_plan.mapper import (
 	get_so_details,
@@ -151,10 +149,20 @@ class ProductionPlan(Document):
 		self.set_status()
 		self._rename_temporary_references()
 		validate_uom_is_integer(self, "stock_uom", "planned_qty")
+		self.validate_planned_qty()
 		self.validate_sales_orders()
 		self.validate_material_request_type()
 		self.validate_raw_material_group_warehouse()
 		self.enable_auto_reserve_stock()
+
+	def validate_planned_qty(self):
+		for d in self.get("po_items"):
+			if flt(d.planned_qty) <= 0:
+				frappe.throw(
+					_("Row #{0}: Planned Qty must be greater than 0 for Item {1}.").format(
+						d.idx, frappe.bold(d.item_code)
+					)
+				)
 
 	def validate_raw_material_group_warehouse(self):
 		if not self.raw_material_group_warehouse:
@@ -228,16 +236,6 @@ class ProductionPlan(Document):
 		self.total_planned_qty = 0
 		for d in self.po_items:
 			self.total_planned_qty += flt(d.planned_qty)
-
-	def validate_data(self):
-		for d in self.get("po_items"):
-			if not d.bom_no:
-				frappe.throw(_("Please select BOM for Item in Row {0}").format(d.idx))
-			else:
-				validate_bom_no(d.item_code, d.bom_no)
-
-			if not flt(d.planned_qty):
-				frappe.throw(_("Please enter Planned Qty for Item {0} at row {1}").format(d.item_code, d.idx))
 
 	def _rename_temporary_references(self):
 		"""po_items and sub_assembly_items items are both constructed client side without saving.
