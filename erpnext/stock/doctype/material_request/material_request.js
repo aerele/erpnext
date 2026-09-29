@@ -298,35 +298,48 @@ frappe.ui.form.on("Material Request", {
 	},
 
 	get_item_data: function (frm, item, overwrite_warehouse = false) {
-		if (item && !item.item_code) {
+		if (!item || !item.item_code) {
 			return;
 		}
+
+		const get_context = () => ({
+			item_code: item.item_code,
+			from_warehouse: item.from_warehouse,
+			warehouse: item.warehouse,
+			doctype: frm.doc.doctype,
+			buying_price_list: frm.doc.buying_price_list,
+			currency: frappe.defaults.get_default("Currency"),
+			name: frm.doc.name,
+			qty: item.qty || 1,
+			stock_qty: item.stock_qty,
+			company: frm.doc.company,
+			conversion_rate: 1,
+			material_request_type: frm.doc.material_request_type,
+			plc_conversion_rate: 1,
+			rate: item.rate,
+			uom: item.uom,
+			conversion_factor: item.conversion_factor,
+			project: item.project,
+		});
+		const context = get_context();
+		frm.item_details_requests ??= new WeakMap();
+		frm.item_details_requests.set(item, context);
 
 		frappe.call({
 			method: "erpnext.stock.get_item_details.get_item_details",
 			args: {
-				ctx: {
-					item_code: item.item_code,
-					from_warehouse: item.from_warehouse,
-					warehouse: item.warehouse,
-					doctype: frm.doc.doctype,
-					buying_price_list: frm.doc.buying_price_list,
-					currency: frappe.defaults.get_default("Currency"),
-					name: frm.doc.name,
-					qty: item.qty || 1,
-					stock_qty: item.stock_qty,
-					company: frm.doc.company,
-					conversion_rate: 1,
-					material_request_type: frm.doc.material_request_type,
-					plc_conversion_rate: 1,
-					rate: item.rate,
-					uom: item.uom,
-					conversion_factor: item.conversion_factor,
-					project: item.project,
-				},
+				ctx: context,
 				overwrite_warehouse: overwrite_warehouse,
 			},
 			callback: function (r) {
+				if (
+					frm.item_details_requests.get(item) !== context ||
+					!frm.doc.items.includes(item) ||
+					JSON.stringify(get_context()) !== JSON.stringify(context)
+				) {
+					return;
+				}
+
 				const d = item;
 				let allow_to_change_fields = [
 					"actual_qty",
