@@ -72,10 +72,14 @@ class ChildItemUpdater:
 				new_child_flag = True
 				items_added_or_removed = True
 				self._check_permissions("create")
+				validate_uom_defined_in_item(d.get("item_code"), d.get("uom"))
 				child_item = self._get_new_child_item(d)
 			else:
 				self._check_permissions("write")
 				child_item = frappe.get_doc(self.parent_doctype + " Item", d.get("docname"))
+				# rows already carrying a UOM are left alone so qty/rate edits still work on them
+				if d.get("uom") and d.get("uom") != child_item.uom:
+					validate_uom_defined_in_item(child_item.item_code, d.get("uom"))
 				d["conversion_factor"] = self._get_new_conversion_factor(child_item, d)
 
 				change_state = get_child_item_change_state(self.parent_doctype, child_item, d)
@@ -650,6 +654,34 @@ def update_child_item_rate_and_discount(
 		child_item.rate_with_margin = child_item.price_list_rate
 		child_item.discount_percentage = 0
 		child_item.discount_amount = flt(child_item.rate_with_margin) - flt(child_item.rate)
+
+
+def validate_uom_defined_in_item(item_code: str, uom: str | None) -> None:
+	"""Enforce the 'Allow UOM with Conversion Rate Defined in Item' stock setting."""
+	if not uom or not frappe.get_single_value(
+		"Stock Settings", "allow_uom_with_conversion_rate_defined_in_item"
+	):
+		return
+
+	stock_uom, variant_of = frappe.get_cached_value("Item", item_code, ["stock_uom", "variant_of"])
+	if uom == stock_uom:
+		return
+
+	# mirror get_conversion_factor, which also falls back to the template's conversion table
+	items = [item_code, variant_of] if variant_of else [item_code]
+	if frappe.db.exists("UOM Conversion Detail", {"parenttype": "Item", "parent": ["in", items], "uom": uom}):
+		return
+
+	frappe.throw(
+		_(
+			"UOM {0} is not allowed for Item {1} because it has no conversion factor in the Item's UOM Conversion table. Add it to the Item, or disable {2} in Stock Settings."
+		).format(
+			frappe.bold(uom),
+			get_link_to_form("Item", item_code),
+			frappe.bold(_("Allow UOM with Conversion Rate Defined in Item")),
+		),
+		title=_("Invalid UOM"),
+	)
 
 
 def update_child_item_uom_and_weight(child_item, new_data) -> None:
