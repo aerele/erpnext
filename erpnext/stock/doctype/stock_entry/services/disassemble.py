@@ -82,7 +82,7 @@ class DisassembleStockEntry(BaseStockEntry):
 			)
 
 	def validate_materials_against_source(self):
-		"""Every non-finished-good row's posted stock qty must equal the source qty x scale."""
+		"""Validate combined stock quantities per source row and item, allowing split rows."""
 		scale_factor = self._get_disassembly_scale_factor()
 		if not scale_factor:
 			# Standalone BOM disassembly: no source entry to scale against. The finished-good
@@ -91,22 +91,33 @@ class DisassembleStockEntry(BaseStockEntry):
 
 		source_rows = self.get_items_from_manufacture_stock_entry()
 		source_by_name = {row.name: row for row in source_rows if row.get("name")}
-		source_by_item = defaultdict(float)
+		expected_quantities = defaultdict(float)
 		for row in source_rows:
-			source_by_item[row.item_code] += flt(row.transfer_qty)
+			if row.is_finished_item:
+				continue
+			expected_quantities[("item", row.item_code)] += flt(row.transfer_qty) * scale_factor
+			if row.get("name"):
+				expected_quantities[("source", row.name)] = flt(row.transfer_qty) * scale_factor
 
-		precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
-		tolerance = _qty_tolerance(precision)
-
+		quantities = defaultdict(float)
+		first_rows = {}
 		for row in self.doc.items:
 			if row.is_finished_item:
-				continue  # covered by validate_finished_good_consumption
+				continue
 
-			if row.ste_detail and row.ste_detail in source_by_name:
-				expected = flt(source_by_name[row.ste_detail].transfer_qty) * scale_factor
-			elif row.item_code in source_by_item:
-				expected = source_by_item[row.item_code] * scale_factor
-			else:
+			keys = [("item", row.item_code)]
+			if row.ste_detail:
+				source_row = source_by_name.get(row.ste_detail)
+				if not source_row or source_row.item_code != row.item_code or source_row.is_finished_item:
+					frappe.throw(
+						_("Row #{0}: Source row {1} does not match disassembly item {2}.").format(
+							row.idx, frappe.bold(row.ste_detail), frappe.bold(row.item_code)
+						),
+						title=_("Invalid Disassembly Item"),
+					)
+				keys.append(("source", row.ste_detail))
+
+			if keys[0] not in expected_quantities:
 				frappe.throw(
 					_(
 						"Row #{0}: Item {1} is not part of the source manufacture entry and cannot be "
@@ -115,16 +126,24 @@ class DisassembleStockEntry(BaseStockEntry):
 					title=_("Invalid Disassembly Item"),
 				)
 
-			if abs(flt(row.transfer_qty, precision) - flt(expected, precision)) > tolerance:
+			for key in keys:
+				quantities[key] += flt(row.transfer_qty)
+				first_rows.setdefault(key, row)
+
+		precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+		tolerance = _qty_tolerance(precision)
+		for key, quantity in quantities.items():
+			expected = expected_quantities[key]
+			if abs(flt(quantity, precision) - flt(expected, precision)) > tolerance:
+				row = first_rows[key]
 				frappe.throw(
 					_(
-						"Row #{0}: Item {1} quantity ({2} in stock UOM) does not match the quantity "
-						"derived from the source ({3}). Do not change the UOM, conversion factor or "
-						"quantity of disassembly rows."
+						"Row #{0}: Item {1} total quantity ({2} in stock UOM) does not match the quantity "
+						"derived from the source ({3}). Check the combined quantity of split disassembly rows."
 					).format(
 						row.idx,
 						frappe.bold(row.item_code),
-						flt(row.transfer_qty, precision),
+						flt(quantity, precision),
 						flt(expected, precision),
 					),
 					title=_("Invalid Disassembly Quantity"),
