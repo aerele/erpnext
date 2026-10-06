@@ -1,6 +1,7 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 # License: GNU General Public License v3. See license.txt
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from frappe.permissions import add_user_permission, remove_user_permission
@@ -4319,6 +4320,125 @@ class TestStockEntry(ERPNextTestSuite):
 		fg_row.conversion_factor = 0.01
 
 		self.assertRaises(frappe.ValidationError, se.save)
+
+	def test_disassembly_material_aggregate_validation(self):
+		from erpnext.stock.doctype.stock_entry.services.disassemble import DisassembleStockEntry
+
+		source_rows = [
+			frappe._dict(name="component-row", item_code="Component", transfer_qty=5),
+			frappe._dict(name="other-row", item_code="Other Component", transfer_qty=5),
+			frappe._dict(name="finished-row", item_code="Finished Good", transfer_qty=1, is_finished_item=1),
+		]
+		cases = [
+			("duplicate reference", 1, [("component-row", "Component", 5)] * 2, "Quantity"),
+			("valid split", 1, [("component-row", "Component", 2), ("component-row", "Component", 3)], None),
+			("wrong item", 1, [("component-row", "Other Component", 5)], "Item"),
+			("unknown reference", 1, [("unknown-row", "Component", 5)], "Item"),
+			("finished reference", 1, [("finished-row", "Finished Good", 1)], "Item"),
+			("partial", 0.4, [("component-row", "Component", 1)] * 2, None),
+			("partial excess", 0.4, [("component-row", "Component", 2)] * 2, "Quantity"),
+			("unlinked duplicate", 1, [(None, "Component", 5)] * 2, "Quantity"),
+			("unlinked split", 1, [(None, "Component", 2), (None, "Component", 3)], None),
+			("mixed references", 1, [("component-row", "Component", 5), (None, "Component", 5)], "Quantity"),
+		]
+		for label, scale, rows, error in cases:
+			with self.subTest(label=label):
+				items = [
+					frappe._dict(idx=idx, ste_detail=reference, item_code=item, transfer_qty=qty)
+					for idx, (reference, item, qty) in enumerate(rows, 1)
+				]
+				service = DisassembleStockEntry(SimpleNamespace(items=items))
+				with (
+					patch.object(service, "_get_disassembly_scale_factor", return_value=scale),
+					patch.object(service, "get_items_from_manufacture_stock_entry", return_value=source_rows),
+					patch("frappe.get_precision", return_value=6),
+				):
+					if error:
+						with self.assertRaises(frappe.ValidationError) as raised:
+							service.validate_materials_against_source()
+						self.assertIn(error.lower(), str(raised.exception).lower())
+					else:
+						service.validate_materials_against_source()
+
+		# Correct item totals must not conceal excess against one of its source rows.
+		source_rows[1].item_code = "Component"
+		service = DisassembleStockEntry(
+			SimpleNamespace(
+				items=[
+					frappe._dict(idx=1, ste_detail="component-row", item_code="Component", transfer_qty=10)
+				]
+			)
+		)
+		with (
+			patch.object(service, "_get_disassembly_scale_factor", return_value=1),
+			patch.object(service, "get_items_from_manufacture_stock_entry", return_value=source_rows),
+			patch("frappe.get_precision", return_value=6),
+			self.assertRaises(frappe.ValidationError),
+		):
+			service.validate_materials_against_source()
+
+	def test_disassembly_split_rows_stock_ledger(self):
+		warehouse = "_Test Warehouse - _TC"
+		component = make_item(
+			"_Test Disassembly Split Component",
+			{
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "DSC-.#####",
+			},
+		).name
+		finished_good = make_item("_Test Disassembly Split Finished Good", {"is_stock_item": 1}).name
+		receipt = make_stock_entry(item_code=component, target=warehouse, qty=10, basic_rate=10)
+		batch = get_batch_from_bundle(receipt.items[0].serial_and_batch_bundle)
+		manufacture = frappe.get_doc(
+			{
+				"doctype": "Stock Entry",
+				"company": "_Test Company",
+				"purpose": "Manufacture",
+				"fg_completed_qty": 2,
+				"items": [
+					stock_entry_row(
+						component, 10, s_warehouse=warehouse, batch_no=batch, use_serial_batch_fields=1
+					),
+					stock_entry_row(finished_good, 2, t_warehouse=warehouse, is_finished_item=1),
+				],
+			}
+		)
+		manufacture.set_stock_entry_type()
+		manufacture.submit()
+
+		# Two partial disassemblies recover exactly the consumed component quantity.
+		for iteration in range(2):
+			with self.subTest(iteration=iteration):
+				disassembly = frappe.get_doc(
+					{
+						"doctype": "Stock Entry",
+						"company": "_Test Company",
+						"purpose": "Disassemble",
+						"source_stock_entry": manufacture.name,
+						"fg_completed_qty": 1,
+						"from_warehouse": warehouse,
+						"to_warehouse": warehouse,
+					}
+				)
+				disassembly.set_stock_entry_type()
+				disassembly.get_items()
+				row = next(row for row in disassembly.items if row.item_code == component)
+				split = disassembly.append("items", row.as_dict())
+				with self.assertRaisesRegex(frappe.ValidationError, "total quantity"):
+					disassembly.save()
+				self.assertFalse(frappe.db.exists("Stock Ledger Entry", {"voucher_no": disassembly.name}))
+
+				row.qty, split.qty = 2, 3
+				disassembly.submit()
+				ledger = frappe.get_all(
+					"Stock Ledger Entry",
+					filters={"voucher_no": disassembly.name, "is_cancelled": 0},
+					fields=["item_code", "actual_qty"],
+				)
+				self.assertEqual(sum(row.actual_qty for row in ledger if row.item_code == component), 5)
+				self.assertEqual(sum(row.actual_qty for row in ledger if row.item_code == finished_good), -1)
 
 	def test_sample_retention_stock_entry(self):
 		from erpnext.stock.doctype.stock_entry.services.manufacturing import (
