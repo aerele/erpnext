@@ -4,6 +4,7 @@
 import frappe
 from frappe.utils import now_datetime
 
+from erpnext.accounts.utils import get_fiscal_year
 from erpnext.tests.utils import ERPNextTestSuite
 
 
@@ -43,6 +44,11 @@ class TestFiscalYear(ERPNextTestSuite):
 		company_fy.insert()
 		self.assertTrue(frappe.db.exists("Fiscal Year", global_fy.name))
 		self.assertTrue(frappe.db.exists("Fiscal Year", company_fy.name))
+		for date in ("2001-03-31", "2001-04-01", "2001-12-31"):
+			self.assertEqual(get_fiscal_year(date, company="_Test Company")[0], company_fy.name)
+		self.assertEqual(get_fiscal_year("2002-01-01", company="_Test Company")[0], global_fy.name)
+		self.assertEqual(get_fiscal_year("2001-04-01")[0], global_fy.name)
+		self.assertEqual(get_fiscal_year("2001-04-01", company="_Test Company 1")[0], global_fy.name)
 
 
 def test_record_generator():
