@@ -397,6 +397,7 @@ sqlite_search = ["erpnext.stock.doctype.item.item_search.ItemSearch"]
 doc_events = {
 	"*": {
 		"validate": [
+			"erpnext.accounts.doctype.tax_category.tax_category.validate_tax_category",
 			"erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
 			"erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
 			"erpnext.stock.doctype.company_restriction.company_restriction.validate_transaction_company",

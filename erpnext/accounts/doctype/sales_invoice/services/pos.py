@@ -7,6 +7,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_link_to_form
 
+from erpnext.accounts.doctype.tax_category.tax_category import get_enabled_tax_category
+
 
 class PartialPaymentValidationError(frappe.ValidationError):
 	pass
@@ -80,7 +82,10 @@ class POSService:
 		"""Profile defaults the user may override; only applied outside validation."""
 		doc = self.doc
 		update_multi_mode_option(doc, pos)
-		doc.tax_category = pos.get("tax_category")
+		if not (doc.is_return and doc.return_against):
+			doc.tax_category = get_enabled_tax_category(pos.get("tax_category")) or get_enabled_tax_category(
+				doc.tax_category
+			)
 		if not doc.customer:
 			doc.customer = pos.customer
 		doc.ignore_pricing_rule = pos.ignore_pricing_rule

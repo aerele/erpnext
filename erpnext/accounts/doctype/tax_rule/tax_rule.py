@@ -14,6 +14,7 @@ from frappe.utils import cstr
 from frappe.utils.nestedset import get_root_of
 
 from erpnext import _refuse, require_party_permission, require_permission
+from erpnext.accounts.doctype.tax_category.tax_category import get_enabled_tax_category
 from erpnext.setup.doctype.customer_group.customer_group import get_parent_customer_groups
 from erpnext.setup.doctype.supplier_group.supplier_group import get_parent_supplier_groups
 
@@ -207,6 +208,8 @@ def get_tax_rule_party_details(party: str | None, party_type: str, args: dict | 
 def get_tax_template(posting_date, args):
 	"""Get matching tax rule"""
 	args = frappe._dict(args)
+	if args.get("tax_category") and not get_enabled_tax_category(args.tax_category):
+		return None
 
 	TaxRule = DocType("Tax Rule")
 	query = frappe.qb.from_(TaxRule).select("*")

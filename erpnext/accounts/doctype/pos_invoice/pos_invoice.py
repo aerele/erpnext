@@ -20,6 +20,7 @@ from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
 )
 from erpnext.accounts.doctype.sales_invoice.services.loyalty import LoyaltyService
 from erpnext.accounts.doctype.sales_invoice.services.status import get_discounting_status
+from erpnext.accounts.doctype.tax_category.tax_category import get_enabled_tax_category
 from erpnext.accounts.party import get_due_date, get_party_account
 from erpnext.controllers.queries import item_query as _item_query
 from erpnext.controllers.sales_and_purchase_return import get_sales_invoice_item_from_consolidated_invoice
@@ -701,13 +702,17 @@ class POSInvoice(SalesInvoice):
 				"write_off_cost_center",
 				"apply_discount_on",
 				"cost_center",
-				"tax_category",
 				"ignore_pricing_rule",
 				"company_address",
 				"update_stock",
 			):
 				if not for_validate:
 					self.set(fieldname, profile.get(fieldname))
+
+			if not for_validate and not (self.is_return and self.return_against):
+				self.tax_category = get_enabled_tax_category(
+					profile.get("tax_category")
+				) or get_enabled_tax_category(self.tax_category)
 
 			if self.customer:
 				customer_price_list, customer_group, customer_currency = frappe.db.get_value(
