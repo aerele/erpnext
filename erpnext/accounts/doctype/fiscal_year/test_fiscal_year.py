@@ -61,6 +61,28 @@ class TestFiscalYear(ERPNextTestSuite):
 		self.assertEqual(fiscal_year.year_end_date, getdate("1904-02-29"))
 		self.assertTrue(fiscal_year.auto_created)
 
+	def test_auto_create_fiscal_year_after_missed_run(self):
+		frappe.get_doc(
+			doctype="Fiscal Year",
+			year="_Test Fiscal Year Missed Run",
+			year_start_date="1905-01-01",
+			year_end_date="1905-12-31",
+		).insert()
+
+		with freeze_time("1905-12-27"):
+			auto_create_fiscal_year()
+			self.assertFalse(frappe.db.exists("Fiscal Year", "1906"))
+
+		for run_date in ("1905-12-29", "1906-01-02"):
+			with self.subTest(run_date=run_date), freeze_time(run_date):
+				auto_create_fiscal_year()
+				fiscal_year = frappe.get_doc("Fiscal Year", "1906")
+				self.assertEqual(fiscal_year.year_start_date, getdate("1906-01-01"))
+				self.assertEqual(fiscal_year.year_end_date, getdate("1906-12-31"))
+				auto_create_fiscal_year()
+				self.assertEqual(frappe.db.count("Fiscal Year", {"name": "1906"}), 1)
+				frappe.delete_doc("Fiscal Year", "1906")
+
 
 def test_record_generator():
 	test_records = [

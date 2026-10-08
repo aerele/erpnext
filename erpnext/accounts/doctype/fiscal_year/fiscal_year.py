@@ -102,7 +102,7 @@ def auto_create_fiscal_year():
 	fiscal_year = (
 		frappe.qb.from_(fy)
 		.select(fy.name)
-		.where((fy.year_end_date == follow_up_date) & (fy.is_short_year == 0))
+		.where((fy.year_end_date <= follow_up_date) & (fy.is_short_year == 0))
 		.run()
 	)
 
