@@ -2,8 +2,10 @@
 # License: GNU General Public License v3. See license.txt
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import getdate, now_datetime
+from freezegun import freeze_time
 
+from erpnext.accounts.doctype.fiscal_year.fiscal_year import auto_create_fiscal_year
 from erpnext.tests.utils import ERPNextTestSuite
 
 
@@ -43,6 +45,21 @@ class TestFiscalYear(ERPNextTestSuite):
 		company_fy.insert()
 		self.assertTrue(frappe.db.exists("Fiscal Year", global_fy.name))
 		self.assertTrue(frappe.db.exists("Fiscal Year", company_fy.name))
+
+	@freeze_time("1903-02-25")
+	def test_auto_create_fiscal_year_before_leap_year(self):
+		frappe.get_doc(
+			doctype="Fiscal Year",
+			year="_Test Fiscal Year Before Leap Year",
+			year_start_date="1902-03-01",
+			year_end_date="1903-02-28",
+		).insert()
+
+		auto_create_fiscal_year()
+		fiscal_year = frappe.get_doc("Fiscal Year", "1903-1904")
+		self.assertEqual(fiscal_year.year_start_date, getdate("1903-03-01"))
+		self.assertEqual(fiscal_year.year_end_date, getdate("1904-02-29"))
+		self.assertTrue(fiscal_year.auto_created)
 
 
 def test_record_generator():

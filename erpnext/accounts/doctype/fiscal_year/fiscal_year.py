@@ -117,7 +117,7 @@ def auto_create_fiscal_year():
 			new_fy.disabled = cint(current_fy.disabled)
 
 			new_fy.year_start_date = add_days(current_fy.year_end_date, 1)
-			new_fy.year_end_date = add_years(current_fy.year_end_date, 1)
+			new_fy.year_end_date = add_days(add_years(new_fy.year_start_date, 1), -1)
 
 			start_year = cstr(new_fy.year_start_date.year)
 			end_year = cstr(new_fy.year_end_date.year)
