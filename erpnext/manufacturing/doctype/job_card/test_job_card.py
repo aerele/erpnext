@@ -991,16 +991,22 @@ class TestJobCard(ERPNextTestSuite):
 		jc.docstatus = 2
 		assertStatus("Cancelled")
 
+	@ERPNextTestSuite.change_settings("Manufacturing Settings", {"validate_components_quantities_per_bom": 0})
 	def test_job_card_material_request_and_bom_details(self):
 		from erpnext.stock.doctype.material_request.mapper import make_stock_entry
 
 		create_bom_with_multiple_operations()
 		work_order = make_wo_with_transfer_against_jc()
 
-		job_card_name = frappe.db.get_value("Job Card", {"work_order": work_order.name}, "name")
+		job_card_name = frappe.db.get_value(
+			"Job Card", {"work_order": work_order.name, "operation_id": work_order.operations[0].name}
+		)
 
 		mr = make_material_request(job_card_name)
 		mr.schedule_date = today()
+		mr.set_from_warehouse = work_order.source_warehouse
+		for item in mr.items:
+			item.from_warehouse = work_order.source_warehouse
 		mr.submit()
 
 		ste = make_stock_entry(mr.name)
@@ -1009,7 +1015,21 @@ class TestJobCard(ERPNextTestSuite):
 		self.assertEqual(ste.job_card, job_card_name)
 		self.assertEqual(ste.from_bom, 1.0)
 		self.assertEqual(ste.bom_no, work_order.bom_no)
-		self.assertEqual(ste.fg_completed_qty, frappe.get_value("Job Card", job_card_name, "for_quantity"))
+		job_card = frappe.get_doc("Job Card", job_card_name)
+		self.assertEqual(ste.fg_completed_qty, job_card.for_quantity)
+		self.assertEqual(ste.fg_completed_qty, make_stock_entry_from_jc(job_card_name).fg_completed_qty)
+
+		self.generate_required_stock(work_order)
+		ste.insert()
+		ste.submit()
+
+		job_card.reload()
+		self.assertEqual(job_card.transferred_qty, job_card.for_quantity)
+		employee = frappe.db.get_value("Employee", {"first_name": "_Test Employee"})
+		job_card.start_timer(start_time=now(), employees=[{"employee": employee}])
+		job_card.reload()
+		self.assertEqual(job_card.status, "Work In Progress")
+		self.assertTrue(job_card.time_logs)
 
 	def test_job_card_material_transfer_via_pick_list(self):
 		from erpnext.stock.doctype.material_request.mapper import create_pick_list
