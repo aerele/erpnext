@@ -570,6 +570,7 @@ class PaymentReconciliation(Document):
 		return res
 
 	def reconcile_allocations(self, skip_ref_details_update_for_pe=False):
+		self.validate_allocation()
 		adjust_allocations_for_taxes(self)
 		dr_or_cr = (
 			"credit_in_account_currency"
@@ -616,7 +617,6 @@ class PaymentReconciliation(Document):
 				)
 				return
 
-		self.validate_allocation()
 		self.reconcile_allocations()
 		msgprint(_("Successfully Reconciled"))
 
@@ -755,18 +755,40 @@ class PaymentReconciliation(Document):
 		return invoice_exchange_map
 
 	def validate_allocation(self):
-		unreconciled_invoices = frappe._dict()
+		vouchers = [
+			frappe._dict(voucher_type=invoice_type, voucher_no=invoice_number)
+			for invoice_type, invoice_number in {
+				(row.invoice_type, row.invoice_number)
+				for row in self.get("allocation")
+				if row.invoice_type and row.invoice_number and row.allocated_amount
+			}
+		]
+		if not vouchers:
+			frappe.throw(_("No records found in Allocation table"))
 
-		for inv in self.get("invoices"):
-			unreconciled_invoices.setdefault(inv.invoice_type, {}).setdefault(
-				inv.invoice_number, inv.outstanding_amount
+		ple = qb.DocType("Payment Ledger Entry")
+		accounts = [self.receivable_payable_account]
+		if self.default_advance_account:
+			accounts.append(self.default_advance_account)
+
+		outstandings = QueryPaymentLedger().get_voucher_outstandings(
+			vouchers=vouchers,
+			common_filter=[
+				ple.company == self.company,
+				ple.party_type == self.party_type,
+				ple.party == self.party,
+				ple.account.isin(accounts),
+			],
+		)
+		unreconciled_invoices = {}
+		for invoice in outstandings:
+			key = (invoice.voucher_type, invoice.voucher_no)
+			unreconciled_invoices[key] = (
+				unreconciled_invoices.get(key, 0) + invoice.outstanding_in_account_currency
 			)
 
-		invoices_to_reconcile = []
 		for row in self.get("allocation"):
 			if row.invoice_type and row.invoice_number and row.allocated_amount:
-				invoices_to_reconcile.append(row.invoice_number)
-
 				if flt(row.amount) - flt(row.allocated_amount) < 0:
 					frappe.throw(
 						_(
@@ -774,7 +796,8 @@ class PaymentReconciliation(Document):
 						).format(row.idx, row.allocated_amount, row.amount)
 					)
 
-				invoice_outstanding = unreconciled_invoices.get(row.invoice_type, {}).get(row.invoice_number)
+				key = (row.invoice_type, row.invoice_number)
+				invoice_outstanding = unreconciled_invoices.get(key, 0)
 				if flt(row.allocated_amount) - invoice_outstanding > 0.009:
 					frappe.throw(
 						_(
@@ -782,8 +805,7 @@ class PaymentReconciliation(Document):
 						).format(row.idx, row.allocated_amount, invoice_outstanding)
 					)
 
-		if not invoices_to_reconcile:
-			frappe.throw(_("No records found in Allocation table"))
+				unreconciled_invoices[key] = invoice_outstanding - flt(row.allocated_amount)
 
 	def build_dimensions_filter_conditions(self):
 		ple = qb.DocType("Payment Ledger Entry")
