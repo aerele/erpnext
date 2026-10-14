@@ -263,8 +263,11 @@ frappe.ui.form.on("Job Card", {
 			frm.add_custom_button(
 				__("Material Transfer"),
 				() => frm.trigger("make_stock_entry"),
-				__("Create")
+				to_transfer ? undefined : __("Create")
 			);
+			if (to_transfer) {
+				frm.change_custom_button_type(__("Material Transfer"), null, "primary");
+			}
 		}
 	},
 
@@ -821,7 +824,11 @@ frappe.ui.form.on("Job Card", {
 		}
 
 		// Demote Submit to btn-default when an action button is already primary.
-		const has_action_button = show_start || show_resume || show_complete;
+		const has_action_button =
+			show_start ||
+			show_resume ||
+			show_complete ||
+			(!frm.is_new() && !doc.skip_material_transfer && pending_transfer);
 		if (frm.page.btn_primary) {
 			frm.page.btn_primary
 				.toggleClass("btn-primary", !has_action_button)
