@@ -420,11 +420,13 @@ def make_sales_return(source_name: str, target_doc: str | dict | Document | None
 
 
 @frappe.whitelist()
-def make_inter_company_purchase_receipt(source_name: str, target_doc: str | dict | Document | None = None):
-	return make_inter_company_transaction("Delivery Note", source_name, target_doc)
+def make_inter_company_purchase_receipt(
+	source_name: str, target_doc: str | dict | Document | None = None, args: str | dict | None = None
+):
+	return make_inter_company_transaction("Delivery Note", source_name, target_doc, args=args)
 
 
-def make_inter_company_transaction(doctype: str, source_name: str, target_doc=None):
+def make_inter_company_transaction(doctype: str, source_name: str, target_doc=None, args=None):
 	from erpnext.accounts.doctype.sales_invoice.mapper import (
 		get_inter_company_details,
 		set_purchase_references,
@@ -433,16 +435,36 @@ def make_inter_company_transaction(doctype: str, source_name: str, target_doc=No
 		validate_inter_company_transaction,
 	)
 
+	if args is None:
+		args = {}
+	args = frappe.parse_json(args)
+
+	if target_doc:
+		target_doc_obj = frappe.parse_json(target_doc) if isinstance(target_doc, str) else target_doc
+		if (
+			doctype == "Delivery Note"
+			and target_doc_obj.get("inter_company_reference")
+			and target_doc_obj.get("inter_company_reference") != source_name
+		):
+			frappe.throw(
+				_("Cannot map items from multiple Delivery Notes into a single internal Purchase Receipt.")
+			)
+
+	mapped_qty_by_item = get_qty_already_mapped(target_doc, "delivery_note_item")
+	mapped_qty_by_packed_item = get_qty_already_mapped(target_doc, "delivery_note_packed_item")
+	filtered_items = set(args.get("filtered_children", []))
+
 	if doctype == "Delivery Note":
-		source_doc = frappe.get_doc(doctype, source_name)
 		target_doctype = "Purchase Receipt"
 		source_document_warehouse_field = "target_warehouse"
 		target_document_warehouse_field = "from_warehouse"
 	else:
-		source_doc = frappe.get_doc(doctype, source_name)
 		target_doctype = "Delivery Note"
 		source_document_warehouse_field = "from_warehouse"
 		target_document_warehouse_field = "target_warehouse"
+
+	frappe.has_permission(target_doctype, "create", throw=True)
+	source_doc = frappe.get_doc(doctype, source_name)
 
 	validate_inter_company_transaction(source_doc, doctype)
 	details = get_inter_company_details(source_doc, doctype)
@@ -563,7 +585,7 @@ def make_inter_company_transaction(doctype: str, source_name: str, target_doc=No
 
 	def update_item(source, target, source_parent):
 		if source_parent.doctype == "Delivery Note":
-			target.qty = get_pending_receipt_qty(source)
+			target.qty = get_pending_receipt_qty(source, mapped_qty_by_item.get(source.name, 0.0))
 
 		if source.get("use_serial_batch_fields"):
 			target.set("use_serial_batch_fields", 1)
@@ -590,29 +612,48 @@ def make_inter_company_transaction(doctype: str, source_name: str, target_doc=No
 				"Material_request_item": "material_request_item",
 			},
 			"field_no_map": ["warehouse"],
-			"condition": lambda item: get_pending_receipt_qty(item) > 0
+			"condition": lambda item: get_pending_receipt_qty(item, mapped_qty_by_item.get(item.name, 0.0))
+			> 0
 			and not item.closed
-			and item.name not in bundle_rows,
+			and item.name not in bundle_rows
+			and (not filtered_items or item.name in filtered_items),
 			"postprocess": update_item,
 		},
 	}
 	if doctype == "Delivery Note" and bundle_rows:
-		table_maps["Packed Item"] = get_component_receipt_map(bundle_rows)
+		table_maps["Packed Item"] = get_component_receipt_map(
+			bundle_rows, mapped_qty_by_packed_item, filtered_items
+		)
 
-	doclist = get_mapped_doc(doctype, source_name, table_maps, target_doc, set_missing_values)
+	doclist = get_mapped_doc(
+		doctype,
+		source_name,
+		table_maps,
+		target_doc,
+		set_missing_values,
+		ignore_permissions=True,
+	)
 
 	return doclist
 
 
-def get_pending_receipt_qty(item) -> float:
-	return flt(item.qty) - flt(item.get("returned_qty")) - flt(item.get("received_qty"))
+def get_pending_receipt_qty(item, mapped_qty: float = 0.0) -> float:
+	return flt(item.qty) - flt(item.get("returned_qty")) - flt(item.get("received_qty")) - flt(mapped_qty)
 
 
-def get_component_receipt_map(bundle_rows: dict) -> dict:
+def get_component_receipt_map(
+	bundle_rows: dict, mapped_qty_map: dict | None = None, filtered_items: set | None = None
+) -> dict:
 	"""Receive the components of a product bundle row, which is what the delivery moved into transit."""
+	if mapped_qty_map is None:
+		mapped_qty_map = {}
+	if filtered_items is None:
+		filtered_items = set()
 
 	def update_component(source, target, source_parent):
-		target.qty = get_pending_component_qty(source, bundle_rows[source.parent_detail_docname])
+		target.qty = get_pending_component_qty(
+			source, bundle_rows[source.parent_detail_docname], mapped_qty_map.get(source.name, 0.0)
+		)
 		target.rate = flt(source.incoming_rate)
 		if source.get("use_serial_batch_fields") or source.get("serial_no") or source.get("batch_no"):
 			target.set("use_serial_batch_fields", 1)
@@ -623,15 +664,23 @@ def get_component_receipt_map(bundle_rows: dict) -> dict:
 		"field_no_map": ["warehouse"],
 		"condition": lambda packed: packed.parent_detail_docname in bundle_rows
 		and not bundle_rows[packed.parent_detail_docname].closed
-		and get_pending_component_qty(packed, bundle_rows[packed.parent_detail_docname]) > 0,
+		and get_pending_component_qty(
+			packed, bundle_rows[packed.parent_detail_docname], mapped_qty_map.get(packed.name, 0.0)
+		)
+		> 0
+		and (
+			not filtered_items
+			or packed.parent_detail_docname in filtered_items
+			or packed.name in filtered_items
+		),
 		"postprocess": update_component,
 	}
 
 
-def get_pending_component_qty(packed_item, bundle_row) -> float:
+def get_pending_component_qty(packed_item, bundle_row, mapped_qty: float = 0.0) -> float:
 	bundle_qty = flt(bundle_row.stock_qty or bundle_row.qty)
 	if not bundle_qty:
 		return 0.0
 
 	kept_share = 1 - flt(bundle_row.returned_qty) / bundle_qty
-	return flt(packed_item.qty) * kept_share - flt(packed_item.get("received_qty"))
+	return flt(packed_item.qty) * kept_share - flt(packed_item.get("received_qty")) - flt(mapped_qty)

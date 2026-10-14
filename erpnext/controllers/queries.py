@@ -601,6 +601,69 @@ def get_delivery_notes_to_be_billed(
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
+def get_delivery_notes_to_be_received(
+	doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: dict, as_dict: bool = False
+):
+	frappe.has_permission("Purchase Receipt", "create", throw=True)
+
+	DeliveryNote = frappe.qb.DocType("Delivery Note")
+	DeliveryNoteItem = frappe.qb.DocType("Delivery Note Item")
+	PackedItem = frappe.qb.DocType("Packed Item")
+
+	fields = get_fields(doctype, ["name", "customer", "posting_date", "company"])
+
+	filters = filters or {}
+	receiving_company = filters.get("represents_company") or filters.get("company")
+	supplier = filters.get("supplier")
+
+	pending_dni = (
+		frappe.qb.from_(DeliveryNoteItem)
+		.select(DeliveryNoteItem.parent)
+		.where(
+			(DeliveryNoteItem.docstatus == 1)
+			& (DeliveryNoteItem.qty > (DeliveryNoteItem.received_qty + DeliveryNoteItem.returned_qty))
+		)
+	)
+
+	pending_pi = (
+		frappe.qb.from_(PackedItem)
+		.select(PackedItem.parent)
+		.where(
+			(PackedItem.parenttype == "Delivery Note")
+			& (PackedItem.docstatus == 1)
+			& (PackedItem.qty > PackedItem.received_qty)
+		)
+	)
+
+	query = frappe.qb.get_query(
+		"Delivery Note",
+		fields=fields,
+		ignore_permissions=True,
+	)
+
+	query = query.where(
+		(DeliveryNote.docstatus == 1)
+		& (DeliveryNote.is_return == 0)
+		& (DeliveryNote.is_internal_customer == 1)
+		& (DeliveryNote.status.notin(["Closed", "Stopped"]))
+		& (DeliveryNote[searchfield].like(f"%{txt}%"))
+		& (DeliveryNote.name.isin(pending_dni) | DeliveryNote.name.isin(pending_pi))
+	)
+
+	if receiving_company:
+		query = query.where(DeliveryNote.represents_company == receiving_company)
+
+	if supplier:
+		supplier_company = frappe.get_cached_value("Supplier", supplier, "represents_company")
+		query = query.where(DeliveryNote.company == (supplier_company or ""))
+
+	query = query.orderby(DeliveryNote[searchfield], order=Order.asc).limit(page_len).offset(start)
+
+	return query.run(as_dict=as_dict)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
 def get_batch_no(doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: dict):
 	doctype = "Batch"
 	meta = frappe.get_meta(doctype, cached=True)
