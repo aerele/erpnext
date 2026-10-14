@@ -176,7 +176,9 @@ class AssetRepair(AccountsController):
 			row.purchase_invoice, row.expense_account, exclude_asset_repair=self.name
 		)
 
-		if flt(row.repair_cost) > available_amount:
+		precision = row.precision("repair_cost") or 2
+		row.repair_cost = flt(row.repair_cost, precision)
+		if row.repair_cost > available_amount:
 			frappe.throw(
 				_(
 					"Row #{0}: Repair cost {1} exceeds available amount {2} for Purchase Invoice {3} and Account {4}"
@@ -560,7 +562,8 @@ def get_unallocated_repair_cost(
 	used_amount = get_allocated_repair_cost(purchase_invoice, expense_account, exclude_asset_repair)
 	total_amount = get_total_expense_amount(purchase_invoice, expense_account)
 
-	return flt(total_amount - used_amount)
+	precision = frappe.get_precision("Asset Repair Purchase Invoice", "repair_cost") or 2
+	return flt(total_amount - used_amount, precision)
 
 
 def get_allocated_repair_cost(
