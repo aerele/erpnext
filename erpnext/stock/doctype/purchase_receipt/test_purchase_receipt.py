@@ -1736,6 +1736,95 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			},
 		)
 
+	def test_get_items_from_internal_delivery_note(self):
+		from erpnext.controllers.queries import get_delivery_notes_to_be_received
+		from erpnext.stock.doctype.delivery_note.mapper import make_inter_company_purchase_receipt
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		prepare_data_for_internal_transfer()
+
+		customer = "_Test Internal Customer 2"
+		company = "_Test Company with perpetual inventory"
+
+		pr1 = make_purchase_receipt(warehouse="Stores - TCP1", company=company)
+
+		dn = create_delivery_note(
+			item_code=pr1.items[0].item_code,
+			company=company,
+			customer=customer,
+			cost_center="Main - TCP1",
+			expense_account="Cost of Goods Sold - TCP1",
+			qty=5,
+			rate=500,
+			warehouse="Stores - TCP1",
+			target_warehouse="Work In Progress - TCP1",
+		)
+
+		# 1. Test get_delivery_notes_to_be_received query finds the submitted internal Delivery Note
+		results = get_delivery_notes_to_be_received(
+			doctype="Delivery Note",
+			txt="",
+			searchfield="name",
+			start=0,
+			page_len=20,
+			filters={"company": company},
+			as_dict=True,
+		)
+		matching_dns = [d.name for d in results if d.name == dn.name]
+		self.assertTrue(matching_dns, f"Delivery Note {dn.name} was not returned by query")
+
+		# 2. Test mapping items from Delivery Note to Purchase Receipt
+		target_pr = make_inter_company_purchase_receipt(dn.name)
+		self.assertEqual(len(target_pr.items), 1)
+		self.assertEqual(target_pr.inter_company_reference, dn.name)
+		self.assertEqual(target_pr.items[0].qty, 5)
+		self.assertEqual(target_pr.items[0].delivery_note_item, dn.items[0].name)
+		self.assertEqual(target_pr.items[0].from_warehouse, "Work In Progress - TCP1")
+
+		# 3. Test deduplication / idempotency when called on target_doc with already mapped rows
+		target_pr_updated = make_inter_company_purchase_receipt(dn.name, target_pr)
+		self.assertEqual(len(target_pr_updated.items), 1, "Duplicate items were appended when re-mapping")
+
+		# 4. Test child item selection (filtered_children)
+		target_pr_filtered = make_inter_company_purchase_receipt(
+			dn.name, args={"filtered_children": [dn.items[0].name]}
+		)
+		self.assertEqual(len(target_pr_filtered.items), 1)
+
+		self.assertRaises(
+			frappe.ValidationError,
+			make_inter_company_purchase_receipt,
+			dn.name,
+			args={"filtered_children": ["non_existent_row"]},
+		)
+
+		# 5. Test rejection of multiple delivery notes
+		target_pr.inter_company_reference = "OTHER-DN-00001"
+		self.assertRaises(frappe.ValidationError, make_inter_company_purchase_receipt, dn.name, target_pr)
+
+		# 6. Test mapping works when user has restricted warehouse permissions (no permission on DN's source warehouse)
+		from erpnext.buying.test_utils import create_user_with_roles
+		from frappe.permissions import add_user_permission
+
+		test_user = "test_receiver@example.com"
+		create_user_with_roles(test_user, "Stock User", "Purchase User")
+
+		frappe.db.delete("User Permission", {"user": test_user})
+		add_user_permission("Warehouse", "Work In Progress - TCP1", test_user)
+
+		try:
+			# Even though user cannot read Delivery Note directly due to Stores - TCP1 warehouse restriction,
+			# they can map it into a Purchase Receipt for their allowed warehouse
+			with self.set_user(test_user):
+				pr_restricted = make_inter_company_purchase_receipt(dn.name)
+				self.assertEqual(len(pr_restricted.items), 1)
+				self.assertEqual(pr_restricted.inter_company_reference, dn.name)
+		finally:
+			frappe.db.delete("User Permission", {"user": test_user})
+
+		dn.cancel()
+		pr1.cancel()
+
 	def test_valuation_spreads_over_the_stock_qty_the_ledger_posts(self):
 		frappe.get_doc({"doctype": "UOM", "uom_name": "_Test Lb"}).insert(ignore_if_duplicate=True)
 		item = make_item(
