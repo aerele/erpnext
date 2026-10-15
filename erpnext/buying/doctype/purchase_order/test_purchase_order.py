@@ -174,6 +174,69 @@ class TestPurchaseOrder(ERPNextTestSuite):
 		finally:
 			frappe.db.set_value("Item", "_Test Item", "over_delivery_receipt_allowance", 0)
 
+	def test_over_receipt_keeps_whole_number_uom_qty(self):
+		item = make_item(
+			"_Test Purchase Over Receipt Whole Item",
+			{"is_stock_item": 1, "stock_uom": "_Test UOM", "over_delivery_receipt_allowance": 10},
+		).name
+		frappe.db.set_value("Item", item, "stock_uom", "_Test UOM")
+
+		try:
+			# 3 + 10% = 3.3, which permits no additional whole unit.
+			frappe.db.set_value("Item", item, "over_delivery_receipt_allowance", 10)
+			po = create_purchase_order(item=item, qty=3)
+			create_pr_against_po(po.name, received_qty=3)
+
+			po.load_from_db()
+			po.run_method("onload")
+			self.assertFalse(po.get_onload("has_pending_receivable_qty"))
+			self.assertEqual(make_purchase_receipt(po.name).items, [])
+
+			# 3 + 50% = 4.5, which permits one additional whole unit.
+			frappe.db.set_value("Item", item, "over_delivery_receipt_allowance", 50)
+			po = create_purchase_order(item=item, qty=3)
+			create_pr_against_po(po.name, received_qty=3)
+
+			po.load_from_db()
+			po.run_method("onload")
+			self.assertTrue(po.get_onload("has_pending_receivable_qty"))
+
+			pr = make_purchase_receipt(po.name)
+			self.assertEqual([row.qty for row in pr.items], [1])
+			pr.insert()
+			pr.submit()
+
+			po.load_from_db()
+			po.run_method("onload")
+			self.assertFalse(po.get_onload("has_pending_receivable_qty"))
+			self.assertEqual(make_purchase_receipt(po.name).items, [])
+		finally:
+			frappe.db.set_value("Item", item, "over_delivery_receipt_allowance", 0)
+
+	def test_over_receipt_keeps_whole_number_stock_uom_qty(self):
+		item_doc = make_item(
+			properties={
+				"is_stock_item": 1,
+				"stock_uom": "_Test UOM",
+				"over_delivery_receipt_allowance": 1,
+			},
+		)
+		item_doc.append("uoms", {"uom": "Kg", "conversion_factor": 10})
+		item_doc.save()
+
+		# 3 Kg + 1% = 3.03 Kg = 30.3 Nos, which permits no additional whole stock unit.
+		po = create_purchase_order(item=item_doc.name, qty=3, do_not_save=True)
+		po.items[0].uom = "Kg"
+		po.items[0].conversion_factor = 10
+		po.insert()
+		po.submit()
+		create_pr_against_po(po.name, received_qty=3)
+
+		po.load_from_db()
+		po.run_method("onload")
+		self.assertFalse(po.get_onload("has_pending_receivable_qty"))
+		self.assertEqual(make_purchase_receipt(po.name).items, [])
+
 	def test_ordered_qty_against_pi_with_update_stock(self):
 		existing_ordered_qty = get_ordered_qty()
 		po = create_purchase_order()
