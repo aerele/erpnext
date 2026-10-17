@@ -480,6 +480,43 @@ class TestMaterialRequirementsPlanningReport(ERPNextTestSuite):
 						[formatdate(start, "MMM YYYY") for start in bucket_starts],
 					)
 
+	def test_mps_data_matches_any_selected_warehouse(self):
+		plan = make_mrp_plan(self)
+		mps = frappe.get_doc("Master Production Schedule", plan.mps)
+
+		for warehouses, expected in (([WAREHOUSE, WIP_WAREHOUSE], [plan.fg_item]), ([WIP_WAREHOUSE], [])):
+			with self.subTest(warehouses=warehouses):
+				report = MaterialRequirementsPlanningReport(
+					{
+						"from_date": mps.from_date,
+						"to_date": mps.to_date,
+						"warehouse": warehouses,
+						"mps": mps.name,
+					}
+				)
+				self.assertEqual([row.item_code for row in report.get_mps_data()], expected)
+
+	def test_rows_carry_a_single_warehouse_with_multiple_selected(self):
+		# a list in the hidden Link column breaks the link title lookup of the whole report
+		from frappe.desk.query_report import run
+
+		plan = make_mrp_plan(self)
+		mps = frappe.get_doc("Master Production Schedule", plan.mps)
+		result = run(
+			"Material Requirements Planning Report",
+			filters={
+				"company": COMPANY,
+				"from_date": mps.from_date,
+				"to_date": mps.to_date,
+				"warehouse": [WAREHOUSE, WIP_WAREHOUSE],
+				"mps": mps.name,
+				"type_of_material": "All",
+				"add_safety_stock": 0,
+			},
+		)
+		rows = {row.item_code: row for row in result["result"] if row.get("item_code")}
+		self.assertEqual(rows[plan.rm_item].warehouse, WAREHOUSE)
+
 
 def make_chart_row(delivery_date, planned_qty=1):
 	return frappe._dict(
