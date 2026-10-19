@@ -565,6 +565,7 @@ class TestPaymentRequest(ERPNextTestSuite):
 		self.assertEqual(pr.status, "Partially Paid")
 		self.assertEqual(pr.outstanding_amount, 3000)
 		self.assertEqual(pr.grand_total, 100)
+		partial_payment = pe
 
 		# complete payment
 		pe = pr.create_payment_entry()
@@ -589,6 +590,16 @@ class TestPaymentRequest(ERPNextTestSuite):
 			submit_doc=1,
 			return_doc=1,
 		)
+
+		pe.cancel()
+		pr.reload()
+		self.assertEqual(pr.outstanding_amount, 3000)
+		self.assertEqual(pr.status, "Partially Paid")
+
+		partial_payment.reload().cancel()
+		pr.reload()
+		self.assertEqual(pr.outstanding_amount, 5000)
+		self.assertEqual(pr.status, "Initiated")
 
 	def test_single_payment_with_payment_term_for_same_currency(self):
 		create_payment_terms_template()
