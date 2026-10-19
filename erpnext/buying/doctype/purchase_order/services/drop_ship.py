@@ -5,6 +5,7 @@
 
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 
 class DropShipService:
@@ -38,33 +39,36 @@ class DropShipService:
 					)
 				)
 
-			if not d.get("qty_change"):
+			precision = item.precision("received_qty")
+			qty_change = flt(d.get("qty_change"), precision)
+			received_qty = flt(item.received_qty + qty_change, precision)
+
+			if not qty_change:
 				frappe.throw(
 					_(
 						"Item {0} has no changes in delivered quantity. Please unselect the row if you do not wish to update its quantity."
 					).format(frappe.bold(item.item_code))
 				)
 
-			if d.get("qty_change") < 0 and abs(d.get("qty_change")) > item.received_qty:
+			if qty_change < 0 and received_qty < 0:
 				frappe.throw(
 					_("Delivered Qty cannot be reduced by more than {0} for item {1}").format(
 						item.received_qty, frappe.bold(item.item_code)
 					)
 				)
 
-			if d.get("qty_change") > 0 and item.received_qty + d.get("qty_change") > item.qty:
+			if qty_change > 0 and received_qty > flt(item.qty, precision):
 				frappe.throw(
 					_("Delivered Qty cannot be increased by more than {0} for item {1}").format(
-						item.qty - item.received_qty, frappe.bold(item.item_code)
+						flt(item.qty - item.received_qty, precision), frappe.bold(item.item_code)
 					)
 				)
 
-			qty_change = item.received_qty + d.get("qty_change")
-			item.db_set("received_qty", qty_change, update_modified=True)
+			item.db_set("received_qty", received_qty, update_modified=True)
 			doc.add_comment(
 				"Label",
 				_("updated delivered quantity for item {0} to {1}").format(
-					frappe.bold(item.item_code), frappe.bold(qty_change)
+					frappe.bold(item.item_code), frappe.bold(received_qty)
 				),
 			)
 		doc.update_receiving_percentage()
