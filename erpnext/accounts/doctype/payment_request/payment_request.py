@@ -259,26 +259,9 @@ class PaymentRequest(Document):
 				)
 
 	def before_submit(self):
-		if (
-			self.currency != self.party_account_currency
-			and self.party_account_currency == get_company_currency(self.company)
-		):
-			# set outstanding amount in party account currency
-			invoice = frappe.get_value(
-				self.reference_doctype,
-				self.reference_name,
-				["rounded_total", "grand_total", "base_rounded_total", "base_grand_total"],
-				as_dict=1,
-			)
-			grand_total = invoice.get("rounded_total") or invoice.get("grand_total")
-			base_grand_total = invoice.get("base_rounded_total") or invoice.get("base_grand_total")
-			self.outstanding_amount = flt(
-				self.grand_total / grand_total * base_grand_total,
-				self.precision("outstanding_amount"),
-			)
-
-		else:
-			self.outstanding_amount = self.grand_total
+		self.outstanding_amount = _get_amount_in_party_account_currency(
+			self, self.precision("outstanding_amount")
+		)
 
 		if self.payment_request_type == "Outward":
 			self.status = "Initiated"
@@ -1191,6 +1174,25 @@ def make_payment_entry(docname: str):
 	return doc.create_payment_entry(submit=False).as_dict()
 
 
+def _get_amount_in_party_account_currency(payment_request, precision):
+	"""Return the full requested amount in the currency used by outstanding_amount."""
+	if (
+		payment_request.currency != payment_request.party_account_currency
+		and payment_request.party_account_currency == get_company_currency(payment_request.company)
+	):
+		reference = frappe.get_value(
+			payment_request.reference_doctype,
+			payment_request.reference_name,
+			["rounded_total", "grand_total", "base_rounded_total", "base_grand_total"],
+			as_dict=1,
+		)
+		grand_total = reference.get("rounded_total") or reference.get("grand_total")
+		base_grand_total = reference.get("base_rounded_total") or reference.get("base_grand_total")
+		return flt(payment_request.grand_total / grand_total * base_grand_total, precision)
+
+	return payment_request.grand_total
+
+
 def update_payment_requests_as_per_pe_references(references=None, cancel=False):
 	"""
 	Update Payment Request's `Status` and `Outstanding Amount` based on Payment Entry Reference's `Allocated Amount`.
@@ -1198,7 +1200,6 @@ def update_payment_requests_as_per_pe_references(references=None, cancel=False):
 	if not references:
 		return
 
-	precision = frappe.get_precision("Payment Entry Reference", "allocated_amount")
 	referenced_payment_requests = frappe.get_all(
 		"Payment Request",
 		filters={"name": ["in", {row.payment_request for row in references if row.payment_request}]},
@@ -1207,8 +1208,21 @@ def update_payment_requests_as_per_pe_references(references=None, cancel=False):
 			"grand_total",
 			"outstanding_amount",
 			"payment_request_type",
+			"currency",
+			"party_account_currency",
+			"company",
+			"reference_doctype",
+			"reference_name",
 		],
 	)
+
+	for payment_request in referenced_payment_requests:
+		payment_request.currency_precision = frappe.get_precision(
+			"Payment Request", "outstanding_amount", currency=payment_request.party_account_currency
+		)
+		payment_request.requested_amount = _get_amount_in_party_account_currency(
+			payment_request, payment_request.currency_precision
+		)
 
 	referenced_payment_requests = {pr.name: pr for pr in referenced_payment_requests}
 	doc_updates = {}
@@ -1223,7 +1237,7 @@ def update_payment_requests_as_per_pe_references(references=None, cancel=False):
 		# update outstanding amount
 		new_outstanding_amount = flt(
 			pr_outstanding + ref.allocated_amount if cancel else pr_outstanding - ref.allocated_amount,
-			precision,
+			payment_request.currency_precision,
 		)
 
 		# to handle same payment request for the multiple allocations
@@ -1238,7 +1252,7 @@ def update_payment_requests_as_per_pe_references(references=None, cancel=False):
 			)
 
 		# determine status
-		if new_outstanding_amount == payment_request["grand_total"]:
+		if new_outstanding_amount == payment_request.requested_amount:
 			status = "Initiated" if payment_request["payment_request_type"] == "Outward" else "Requested"
 		elif new_outstanding_amount == 0:
 			status = "Paid"
