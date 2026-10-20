@@ -3124,6 +3124,132 @@ class TestSalesInvoice(ERPNextTestSuite):
 
 		check_gl_entries(self, si.name, expected_gle, "2019-01-30")
 
+	@ERPNextTestSuite.change_settings(
+		"Accounts Settings",
+		{"automatically_process_deferred_accounting_entry": 0},
+	)
+	def test_credit_note_for_unrecognized_deferred_revenue(self):
+		from erpnext.accounts.deferred_revenue import get_deferred_revenue_returns
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		for returned_qty in (1, 0.5):
+			with self.subTest(returned_qty=returned_qty):
+				invoice = make_recurring_reference_invoice(
+					"2019-01-01", "2019-03-31", [("2019-01-01", "2019-03-31")]
+				)
+				invoice.insert()
+				invoice.submit()
+
+				credit_note = make_return_doc("Sales Invoice", invoice.name)
+				credit_note.set_posting_time = 1
+				credit_note.posting_date = "2019-01-01"
+				credit_note.items[0].qty = -returned_qty
+				credit_note.insert()
+				credit_note.submit()
+
+				entries = frappe.get_all(
+					"GL Entry",
+					filters={
+						"voucher_type": "Sales Invoice",
+						"voucher_no": credit_note.name,
+						"is_cancelled": 0,
+					},
+					fields=["account", "debit", "credit"],
+				)
+				self.assertCountEqual(
+					[(entry.account, entry.debit, entry.credit) for entry in entries],
+					[
+						(invoice.items[0].deferred_revenue_account, 100 * returned_qty, 0),
+						(invoice.debit_to, 0, 100 * returned_qty),
+					],
+				)
+				returned = get_deferred_revenue_returns(invoice)
+				self.assertEqual(returned[invoice.items[0].name].base_amount, 100 * returned_qty)
+				if returned_qty == 0.5:
+					second_credit_note = make_return_doc("Sales Invoice", invoice.name)
+					second_credit_note.set_posting_time = 1
+					second_credit_note.posting_date = "2019-01-01"
+					second_credit_note.insert()
+					second_credit_note.submit()
+					self.assertEqual(
+						get_deferred_revenue_returns(invoice)[invoice.items[0].name].base_amount, 100
+					)
+					second_credit_note.cancel()
+				credit_note.cancel()
+				self.assertEqual(get_deferred_revenue_returns(invoice), {})
+
+	@ERPNextTestSuite.change_settings(
+		"Accounts Settings",
+		{
+			"automatically_process_deferred_accounting_entry": 0,
+			"book_deferred_entries_via_journal_entry": 0,
+		},
+	)
+	def test_deferred_recognition_after_credit_note(self):
+		from erpnext.accounts.deferred_revenue import (
+			book_deferred_income_or_expense,
+			get_already_booked_amount,
+		)
+		from erpnext.accounts.doctype.sales_invoice.services.gl_composer import SalesInvoiceGLComposer
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		for booking_basis in ("Days", "Months"):
+			for returned_qty in (1, 0.5):
+				with self.subTest(booking_basis=booking_basis, returned_qty=returned_qty):
+					with self.change_settings(
+						"Accounts Settings", {"book_deferred_entries_based_on": booking_basis}
+					):
+						invoice = make_recurring_reference_invoice(
+							"2019-01-01", "2019-03-31", [("2019-01-01", "2019-03-31")]
+						)
+						invoice.insert()
+						invoice.submit()
+						credit_note = make_return_doc("Sales Invoice", invoice.name)
+						credit_note.set_posting_time = 1
+						credit_note.posting_date = "2019-01-01"
+						credit_note.items[0].qty = -returned_qty
+						credit_note.insert()
+						credit_note.submit()
+
+						book_deferred_income_or_expense(invoice, None, "2019-03-31")
+						booked_amount, booked_account_amount = get_already_booked_amount(
+							invoice, invoice.items[0]
+						)
+						self.assertEqual(booked_amount, 100 * (1 - returned_qty))
+						self.assertEqual(booked_account_amount, booked_amount)
+						self.assertEqual(invoice.items[0].base_net_amount, 100)
+						self.assertEqual(invoice.items[0].net_amount, 100)
+						self.assertEqual(
+							SalesInvoiceGLComposer(credit_note).get_item_income_account(credit_note.items[0]),
+							invoice.items[0].deferred_revenue_account,
+						)
+
+	@ERPNextTestSuite.change_settings(
+		"Accounts Settings",
+		{
+			"book_deferred_entries_based_on": "Days",
+			"book_deferred_entries_via_journal_entry": 0,
+		},
+	)
+	def test_credit_note_after_deferred_revenue_recognition(self):
+		from erpnext.accounts.deferred_revenue import book_deferred_income_or_expense
+		from erpnext.accounts.doctype.sales_invoice.services.gl_composer import SalesInvoiceGLComposer
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		for recognition_date in ("2019-01-31", "2019-03-31"):
+			with self.subTest(recognition_date=recognition_date):
+				invoice = make_recurring_reference_invoice(
+					"2019-01-01", "2019-03-31", [("2019-01-01", "2019-03-31")]
+				)
+				invoice.insert()
+				invoice.submit()
+				book_deferred_income_or_expense(invoice, None, recognition_date)
+				credit_note = make_return_doc("Sales Invoice", invoice.name)
+				self.assertEqual(
+					SalesInvoiceGLComposer(credit_note).get_item_income_account(credit_note.items[0]),
+					invoice.items[0].income_account,
+				)
+
 	def test_deferred_revenue_missing_account(self):
 		si = create_sales_invoice(posting_date="2019-01-10", do_not_submit=True)
 		si.items[0].enable_deferred_revenue = 1
