@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe.desk.query_report import run as run_query_report
 
 from erpnext.accounts.party import get_party_details
 from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
@@ -403,7 +404,10 @@ class TestCompanyRestriction(ERPNextTestSuite):
 		self.restrict_to_companies("Customer", restricted_customer, ["_Test Company 1"])
 
 		with self.set_user(self.make_report_user()):
-			items = {row.item_code for row in self.run_report("stock", "item_balance", {})}
+			items = {
+				row["item_code"]
+				for row in run_query_report("Item Balance (Simple)", ignore_prepared_report=True)["result"]
+			}
 			self.assertIn(allowed_item.name, items)
 			self.assertNotIn(restricted_item.name, items)
 
@@ -452,8 +456,8 @@ class TestCompanyRestriction(ERPNextTestSuite):
 		self.make_stock_in_both_companies()
 
 		with self.set_user(self.make_report_user()):
-			rows = self.run_report("stock", "item_balance", {})
-			warehouses = {row.warehouse for row in rows if row.item_code == "_Test Item"}
+			rows = run_query_report("Item Balance (Simple)", ignore_prepared_report=True)["result"]
+			warehouses = {row["warehouse"] for row in rows if row["item_code"] == "_Test Item"}
 			self.assertIn("Stores - _TC", warehouses)
 			self.assertNotIn("Stores - _TC1", warehouses)
 
