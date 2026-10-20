@@ -3124,6 +3124,45 @@ class TestSalesInvoice(ERPNextTestSuite):
 
 		check_gl_entries(self, si.name, expected_gle, "2019-01-30")
 
+	@ERPNextTestSuite.change_settings(
+		"Accounts Settings",
+		{"automatically_process_deferred_accounting_entry": 0},
+	)
+	def test_credit_note_for_unrecognized_deferred_revenue(self):
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		for returned_qty in (1, 0.5):
+			with self.subTest(returned_qty=returned_qty):
+				invoice = make_recurring_reference_invoice(
+					"2019-01-01", "2019-03-31", [("2019-01-01", "2019-03-31")]
+				)
+				invoice.insert()
+				invoice.submit()
+
+				credit_note = make_return_doc("Sales Invoice", invoice.name)
+				credit_note.set_posting_time = 1
+				credit_note.posting_date = "2019-01-01"
+				credit_note.items[0].qty = -returned_qty
+				credit_note.insert()
+				credit_note.submit()
+
+				entries = frappe.get_all(
+					"GL Entry",
+					filters={
+						"voucher_type": "Sales Invoice",
+						"voucher_no": credit_note.name,
+						"is_cancelled": 0,
+					},
+					fields=["account", "debit", "credit"],
+				)
+				self.assertCountEqual(
+					[(entry.account, entry.debit, entry.credit) for entry in entries],
+					[
+						(invoice.items[0].deferred_revenue_account, 100 * returned_qty, 0),
+						(invoice.debit_to, 0, 100 * returned_qty),
+					],
+				)
+
 	def test_deferred_revenue_missing_account(self):
 		si = create_sales_invoice(posting_date="2019-01-10", do_not_submit=True)
 		si.items[0].enable_deferred_revenue = 1
