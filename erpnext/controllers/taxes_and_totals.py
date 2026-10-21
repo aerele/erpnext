@@ -33,8 +33,9 @@ from erpnext.utilities.regional import temporary_flag
 
 
 class calculate_taxes_and_totals:
-	def __init__(self, doc: Document):
+	def __init__(self, doc: Document, item_amounts=None):
 		self.doc = doc
+		self.item_amounts = item_amounts or {}
 		frappe.flags.round_off_applicable_accounts = (
 			get_round_off_applicable_accounts(self.doc.company, [], self.doc) or []
 		)
@@ -237,7 +238,11 @@ class calculate_taxes_and_totals:
 			elif not item.qty and self.doc.get("is_debit_note"):
 				item.amount = flt(item.rate, item.precision("amount"))
 			else:
-				item.amount = flt(item.rate * self.get_billed_qty(item), item.precision("amount"))
+				# Preserve explicit amounts when the unit rate is derived, as in a proforma.
+				item.amount = flt(
+					self.item_amounts.get(item.name, item.rate * self.get_billed_qty(item)),
+					item.precision("amount"),
+				)
 			item.net_amount = item.amount
 			self._set_in_company_currency(
 				item, ["price_list_rate", "rate_with_margin", "rate", "net_rate", "amount", "net_amount"]

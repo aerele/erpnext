@@ -8,6 +8,7 @@ from frappe.query_builder.functions import Sum
 from frappe.utils import flt, now
 from frappe.utils.file_manager import save_file
 
+from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
 from erpnext.utilities.email_template import get_email_subject_and_message
 
 
@@ -49,6 +50,8 @@ class ProformaInvoice(Document):
 		self.validate_sales_order()
 		self.set_item_values()
 		self.set_total_qty()
+		self.proforma_pdf = None
+		self.grand_total = 0
 
 	def validate_sales_order(self) -> None:
 		if frappe.db.get_value("Sales Order", self.sales_order, "docstatus") != 1:
@@ -111,8 +114,6 @@ class ProformaInvoice(Document):
 		self.total_qty = sum(flt(item.qty) for item in self.items)
 
 	def generate_and_attach_pdf(self) -> None:
-		if self.proforma_pdf:
-			return
 		printed = self.render_pdf()
 		file = save_file(printed["fname"], printed["fcontent"], self.doctype, self.name, is_private=1)
 		self.db_set("proforma_pdf", file.file_url)
@@ -120,13 +121,34 @@ class ProformaInvoice(Document):
 	def render_pdf(self) -> dict:
 		"""Render the proforma PDF from an in-memory, adjusted copy of the Sales Order.
 
-		The Sales Order copy is never saved; it exists only to reuse the standard tax/total
-		calculation and print format so the proforma shows the accurate gross. Each line's qty
-		and rate are set from the proforma (amount-based lines carry a derived rate), so the
-		recomputed amount matches whichever basis the proforma was created on.
+		The copy preserves proforma line amounts and prorates fixed order adjustments,
+		then reuses the standard tax calculation and print format without saving the order.
 		"""
-		sales_order = frappe.get_doc("Sales Order", self.sales_order)
+		sales_order = frappe.get_doc("Sales Order", self.sales_order, check_permission="read")
 		lines = {item.so_detail: item for item in self.items}
+		if sales_order.net_total:
+			proforma_share = (
+				sum(
+					flt(item.net_amount) * flt(lines[item.name].amount) / flt(item.amount)
+					for item in sales_order.items
+					if item.name in lines and item.amount
+				)
+				/ sales_order.net_total
+			)
+		elif sales_order.total:
+			proforma_share = sum(flt(item.amount) for item in self.items) / sales_order.total
+		else:
+			proforma_share = self.total_qty / sales_order.total_qty
+
+		if not sales_order.additional_discount_percentage:
+			sales_order.discount_amount = flt(
+				sales_order.discount_amount * proforma_share, sales_order.precision("discount_amount")
+			)
+		for tax in sales_order.taxes:
+			if tax.charge_type == "Actual":
+				tax.tax_amount = flt(tax.tax_amount * proforma_share, tax.precision("tax_amount"))
+		# Keep the prorated shipping charge already present in the order's tax rows.
+		sales_order.shipping_rule = None
 		sales_order.items = [item for item in sales_order.items if item.name in lines]
 		for item in sales_order.items:
 			item.qty = lines[item.name].qty
@@ -134,7 +156,17 @@ class ProformaInvoice(Document):
 			item.description = lines[item.name].description
 			item.discount_amount = 0
 			item.discount_percentage = 0
-		sales_order.run_method("calculate_taxes_and_totals")
+			item.pricing_rules = None
+			item.price_list_rate = item.rate
+			item.margin_type = None
+			item.margin_rate_or_amount = 0
+		calculate_taxes_and_totals(
+			sales_order, item_amounts={name: item.amount for name, item in lines.items()}
+		)
+		sales_order.calculate_commission()
+		sales_order.calculate_contribution()
+		if sales_order.grand_total < 0:
+			frappe.throw(_("The Proforma Invoice grand total cannot be negative."))
 		sales_order.proforma_no = self.name
 		sales_order.proforma_date = self.proforma_date
 		sales_order.hide_item_qty = self.hide_item_qty
@@ -256,9 +288,18 @@ def send_proforma_email(proforma_name: str, recipients: str) -> None:
 	if not proforma.proforma_pdf:
 		frappe.throw(_("This Proforma Invoice has no PDF to send."))
 
-	file_name = frappe.db.get_value("File", {"file_url": proforma.proforma_pdf}, "name")
+	file_name = frappe.db.get_value(
+		"File",
+		{
+			"file_url": proforma.proforma_pdf,
+			"attached_to_doctype": proforma.doctype,
+			"attached_to_name": proforma.name,
+		},
+		"name",
+	)
 	if not file_name:
 		frappe.throw(_("The attached PDF file could not be found."))
+	frappe.get_doc("File", file_name).check_permission("read")
 	subject, message = proforma.get_email_content()
 	frappe.sendmail(
 		recipients=[email.strip() for email in recipients.split(",") if email.strip()],
