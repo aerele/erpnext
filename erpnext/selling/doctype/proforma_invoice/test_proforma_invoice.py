@@ -2,10 +2,14 @@
 # License: GNU General Public License v3. See license.txt
 
 import json
+from unittest.mock import patch
 
 import frappe
+from frappe.core.doctype.user_permission.test_user_permission import create_user
 from frappe.utils import flt
+from frappe.utils.file_manager import save_file
 
+from erpnext.accounts.doctype.pricing_rule.test_pricing_rule import make_pricing_rule
 from erpnext.accounts.services.child_item_update import update_child_qty_rate
 from erpnext.selling.doctype.proforma_invoice.proforma_invoice import (
 	get_sales_order_items,
@@ -69,24 +73,91 @@ class TestProformaInvoice(ERPNextTestSuite):
 		# partial (4 of 10): net 400 + 10% tax = 440
 		self.assertEqual(flt(proforma.grand_total), 440)
 
-	def test_amount_based_proforma(self):
-		"""Amount basis: qty and amount are both entered; the rate is derived from them."""
-		sales_order = make_sales_order(qty=10)  # rate 100
-		so_detail = sales_order.items[0].name
+	def test_partial_proforma_prorates_fixed_adjustments(self):
+		for discount, freight, qty, expected in ((200, 0, 1, 80), (0, 500, 5, 750), (200, 500, 5, 650)):
+			with self.subTest(discount=discount, freight=freight):
+				sales_order = make_sales_order(qty=10, do_not_submit=True)
+				sales_order.apply_discount_on = "Net Total"
+				sales_order.discount_amount = discount
+				if freight:
+					sales_order.append(
+						"taxes",
+						{
+							"charge_type": "Actual",
+							"account_head": "_Test Account CST - _TC",
+							"description": "Freight",
+							"tax_amount": freight,
+						},
+					)
+				sales_order.submit()
+				proforma = self.create_proforma(sales_order, [(sales_order.items[0].name, qty)])
+				self.assertEqual(proforma.grand_total, expected)
+				sales_order.reload()
+				self.assertEqual(sales_order.discount_amount, discount)
+				if freight:
+					self.assertEqual(sales_order.taxes[0].tax_amount, freight)
 
-		name = make_proforma_invoice(
-			sales_order.name,
-			json.dumps([{"so_detail": so_detail, "qty": 5, "amount": 250}]),
-			based_on="Amount",
+	def test_proforma_preserves_pricing_rule_rate(self):
+		rule = make_pricing_rule(
+			selling=1, applicable_for="Customer", customer="_Test Customer", discount_percentage=10
 		)
-		proforma = frappe.get_doc("Proforma Invoice", name)
+		sales_order = make_sales_order(qty=2, price_list_rate=100)
+		self.assertIn(rule.name, sales_order.items[0].pricing_rules)
+		self.assertEqual(sales_order.items[0].rate, 90)
+		proforma = self.create_proforma(sales_order, [(sales_order.items[0].name, 2)])
+		self.assertEqual(proforma.items[0].rate, 90)
+		self.assertEqual(proforma.grand_total, 180)
 
-		self.assertEqual(proforma.based_on, "Amount")
-		item = proforma.items[0]
-		self.assertEqual(flt(item.qty), 5)
-		self.assertEqual(flt(item.rate), 50)  # 250 / 5
-		self.assertEqual(flt(item.amount), 250)
-		self.assertEqual(flt(proforma.grand_total), 250)
+	def test_amount_based_proforma(self):
+		sales_order = make_sales_order(qty=10)
+		for qty, amount in ((5, 250), (3, 100)):
+			with self.subTest(qty=qty, amount=amount):
+				with patch("frappe.attach_print", wraps=frappe.attach_print) as attach_print:
+					name = make_proforma_invoice(
+						sales_order.name,
+						json.dumps([{"so_detail": sales_order.items[0].name, "qty": qty, "amount": amount}]),
+						based_on="Amount",
+					)
+				proforma = frappe.get_doc("Proforma Invoice", name)
+				self.assertEqual(proforma.based_on, "Amount")
+				self.assertEqual(proforma.items[0].qty, qty)
+				self.assertAlmostEqual(proforma.items[0].rate, amount / qty, places=8)
+				self.assertEqual(proforma.items[0].amount, amount)
+				self.assertEqual(proforma.grand_total, amount)
+				self.assertEqual(attach_print.call_args.kwargs["doc"].items[0].amount, amount)
+
+	def test_proforma_rejects_unrelated_pdf(self):
+		sales_order = make_sales_order(qty=2)
+		private_file = save_file("private-payroll.pdf", b"Private payroll", None, None, is_private=1)
+		user = create_user("proforma-sales@example.com", "Sales User")
+		frappe.set_user(user.name)
+		try:
+			self.assertFalse(private_file.has_permission("read"))
+			proforma = frappe.new_doc(
+				"Proforma Invoice",
+				sales_order=sales_order.name,
+				proforma_pdf=private_file.file_url,
+				grand_total=1,
+				items=[{"so_detail": sales_order.items[0].name, "qty": 2}],
+			)
+			proforma.insert()
+			self.assertFalse(proforma.proforma_pdf)
+			self.assertEqual(proforma.grand_total, 0)
+			proforma.proforma_pdf = private_file.file_url
+			proforma.grand_total = 1
+			proforma.submit()
+			self.assertNotEqual(proforma.proforma_pdf, private_file.file_url)
+			self.assertEqual(proforma.grand_total, 200)
+			with patch("frappe.sendmail") as sendmail:
+				send_proforma_email(proforma.name, "customer@example.com")
+				self.assertEqual(sendmail.call_count, 1)
+				# Simulate a forged record saved before this fix.
+				proforma.db_set("proforma_pdf", private_file.file_url)
+				with self.assertRaises(frappe.ValidationError):
+					send_proforma_email(proforma.name, "customer@example.com")
+				self.assertEqual(sendmail.call_count, 1)
+		finally:
+			frappe.set_user("Administrator")
 
 	def test_cancelled_proforma_keeps_pdf(self):
 		"""Cancelling voids the proforma but keeps its PDF and status for the audit trail."""
