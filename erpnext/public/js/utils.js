@@ -795,6 +795,204 @@ erpnext.utils.update_child_items = function (opts) {
 	const child_meta = frappe.get_meta(`${frm.doc.doctype} Item`);
 	const has_reserved_stock = opts.has_reserved_stock ? true : false;
 	const get_precision = (fieldname) => child_meta.fields.find((f) => f.fieldname == fieldname).precision;
+	const rate_precision = frappe.meta.get_field_precision(
+		child_meta.fields.find((f) => f.fieldname == "rate"),
+		frm.doc
+	);
+	// UOM lookups still running, and rows whose last UOM lookup failed
+	let pending_uom_lookups = 0;
+	const failed_uom_lookups = new Set();
+	const toggle_update_action = () => {
+		if (pending_uom_lookups) {
+			dialog.disable_primary_action();
+		} else {
+			dialog.enable_primary_action();
+		}
+	};
+	const get_item_details_ctx = ({ item_code, qty, uom, conversion_factor, warehouse }) => ({
+		item_code: item_code,
+		warehouse: warehouse,
+		set_warehouse: frm.doc.set_warehouse,
+		customer: frm.doc.customer || frm.doc.party_name,
+		quotation_to: frm.doc.quotation_to,
+		supplier: frm.doc.supplier,
+		currency: frm.doc.currency,
+		is_internal_supplier: frm.doc.is_internal_supplier,
+		is_internal_customer: frm.doc.is_internal_customer,
+		conversion_rate: frm.doc.conversion_rate,
+		price_list: frm.doc.selling_price_list || frm.doc.buying_price_list,
+		price_list_currency: frm.doc.price_list_currency,
+		plc_conversion_rate: frm.doc.plc_conversion_rate,
+		company: frm.doc.company,
+		order_type: frm.doc.order_type,
+		is_pos: cint(frm.doc.is_pos),
+		is_return: cint(frm.doc.is_return),
+		is_subcontracted: frm.doc.is_subcontracted,
+		ignore_pricing_rule: frm.doc.ignore_pricing_rule,
+		coupon_code: frm.doc.coupon_code,
+		doctype: frm.doc.doctype,
+		name: frm.doc.name,
+		qty: qty || 1,
+		uom: uom,
+		conversion_factor: conversion_factor,
+		pos_profile: cint(frm.doc.is_pos) ? frm.doc.pos_profile : "",
+		tax_category: frm.doc.tax_category,
+		child_doctype: frm.doc.doctype + " Item",
+	});
+	const get_saved_row = (d) =>
+		(frm.doc[opts.child_docname] || []).find((s) => s.name == d.docname && s.item_code == d.item_code);
+	// the order as the dialog would save it, so pricing rules that add up the order's rows count the edited quantities
+	const get_pricing_doc = () => {
+		const saved_rows = frm.doc[opts.child_docname] || [];
+		const rows = dialog.fields_dict.trans_items.df.data
+			.filter((d) => d.item_code)
+			.map((d) => {
+				const saved_row = get_saved_row(d);
+				return {
+					...saved_row,
+					name: d.name,
+					item_code: d.item_code,
+					warehouse: d.warehouse || saved_row?.warehouse,
+					qty: flt(d.qty),
+					uom: d.uom,
+					conversion_factor: flt(d.conversion_factor),
+					stock_qty: flt(d.qty) * flt(d.conversion_factor),
+					rate: flt(d.rate),
+					price_list_rate: d.price_list_rate ?? saved_row?.price_list_rate,
+				};
+			});
+		// closed rows are not in the dialog but stay on the order
+		return { ...frm.doc, [opts.child_docname]: [...saved_rows.filter((d) => d.closed), ...rows] };
+	};
+	// what pricing rules that add up the order's rows see of the rows other than `row`:
+	// their stock qty, and their amount at the price list rate
+	const get_pricing_key = (row) =>
+		JSON.stringify(
+			dialog.fields_dict.trans_items.df.data
+				.filter((d) => d.item_code && d !== row)
+				.map((d) => [
+					d.name,
+					d.item_code,
+					d.warehouse,
+					flt(d.qty),
+					flt(d.qty) * flt(d.conversion_factor),
+					flt(d.price_list_rate ?? get_saved_row(d)?.price_list_rate),
+				])
+		);
+	// latest UOM lookup per row: the rate it set (unless edited by hand), the conversion factor that rate is for,
+	// the UOM the row's conversion factor belongs to, and the other rows it was priced with
+	const uom_lookups = new Map();
+	let last_lookup_token = 0;
+	const get_stale_pricing_rows = () =>
+		dialog.fields_dict.trans_items.df.data.filter(
+			(d) => uom_lookups.has(d.name) && uom_lookups.get(d.name).pricing_key != get_pricing_key(d)
+		);
+	const apply_uom_pricing = (row, state, conversion_factor, details) => {
+		// a rate entered while the price was loading is kept as entered
+		state.rate_edited ||= flt(row.rate, rate_precision) != flt(state.rate, rate_precision);
+
+		if (details.price_found) {
+			// replaces the pricing rules applied for the previous UOM, so they are not re-applied on save
+			row.price_list_rate = details.price_list_rate;
+			row.pricing_rules = "";
+			if (!state.rate_edited) {
+				Object.assign(row, {
+					rate: details.rate,
+					pricing_rules: details.pricing_rules || "",
+					margin_type: details.margin_type || "",
+					margin_rate_or_amount: flt(details.margin_rate_or_amount),
+					discount_percentage: flt(details.discount_percentage),
+					discount_amount: flt(details.discount_amount),
+				});
+			}
+		} else {
+			// no price to fetch, scale the current rates to the new conversion factor instead
+			if (flt(state.rate_cf)) {
+				const factor = flt(conversion_factor) / flt(state.rate_cf);
+				if (!state.rate_edited) {
+					row.rate = flt(flt(row.rate) * factor, rate_precision);
+				}
+				if (row.price_list_rate != null) {
+					row.price_list_rate = flt(flt(row.price_list_rate) * factor, rate_precision);
+				}
+			}
+			row.pricing_rules = "";
+		}
+		row.conversion_factor = conversion_factor;
+		// saved even if the row ends up on its saved UOM, so the previous pricing rules are not re-applied
+		row.pricing_refreshed = 1;
+		Object.assign(state, { rate: row.rate, rate_cf: conversion_factor, cf_uom: row.uom });
+	};
+	const fetch_uom_pricing = (row, uom_changed) => {
+		const { item_code, uom, qty, warehouse } = row;
+		if (!item_code || !uom) return;
+
+		const state = uom_lookups.get(row.name) || { rate_cf: flt(row.conversion_factor) };
+		if (uom_changed || !uom_lookups.has(row.name)) {
+			// the price and conversion factor of a new UOM replace the ones of the previous UOM
+			Object.assign(state, { rate: row.rate, rate_edited: false, cf_uom: null });
+		}
+		const token = (state.token = ++last_lookup_token);
+		state.pricing_key = get_pricing_key(row);
+		uom_lookups.set(row.name, state);
+		// a conversion factor entered for this UOM is kept
+		const conversion_factor = state.cf_uom == uom ? flt(row.conversion_factor) : undefined;
+		// a newer lookup or a changed item / UOM makes this one outdated
+		const is_current = () => state.token == token && row.item_code == item_code && row.uom == uom;
+
+		let details;
+		pending_uom_lookups++;
+		toggle_update_action();
+		frappe
+			.run_serially([
+				() =>
+					frm
+						.call({
+							method: "erpnext.accounts.services.child_item_update.get_child_item_uom_pricing",
+							args: {
+								doc: get_pricing_doc(),
+								ctx: get_item_details_ctx({
+									item_code,
+									qty,
+									uom,
+									conversion_factor,
+									warehouse,
+								}),
+								row_name: row.name,
+							},
+						})
+						.then((r) => {
+							details = r.message;
+							if (!details?.conversion_factor) throw new Error("item details not found");
+						}),
+				() => {
+					if (!is_current()) return;
+					apply_uom_pricing(row, state, details.conversion_factor, details);
+					failed_uom_lookups.delete(row.name);
+					// the other rows were priced with this row's previous stock qty
+					refresh_stale_pricing();
+				},
+			])
+			.catch(() => {
+				if (!is_current()) return;
+				failed_uom_lookups.add(row.name);
+				frappe.show_alert({
+					message: __(
+						"Row #{0}: Could not fetch the conversion factor and price for UOM {1}. Clear the UOM and select it again to retry.",
+						[row.idx, uom]
+					),
+					indicator: "red",
+				});
+			})
+			.finally(() => {
+				pending_uom_lookups--;
+				toggle_update_action();
+				dialog.fields_dict.trans_items.grid.refresh();
+			});
+	};
+	// pricing rules can add up the order's rows, so a change to one row can change the price of the others
+	const refresh_stale_pricing = () => get_stale_pricing_rows().forEach((d) => fetch_uom_pricing(d, false));
+	const get_dialog_row = (doc) => dialog.fields_dict.trans_items.df.data.find((d) => d.name == doc.name);
 
 	this.data = frm.doc[opts.child_docname]
 		.filter((d) => !d.closed)
@@ -860,33 +1058,12 @@ erpnext.utils.update_child_items = function (opts) {
 					method: "erpnext.stock.get_item_details.get_item_details",
 					args: {
 						doc: frm.doc,
-						ctx: {
+						ctx: get_item_details_ctx({
 							item_code: this.value,
-							set_warehouse: frm.doc.set_warehouse,
-							customer: frm.doc.customer || frm.doc.party_name,
-							quotation_to: frm.doc.quotation_to,
-							supplier: frm.doc.supplier,
-							currency: frm.doc.currency,
-							is_internal_supplier: frm.doc.is_internal_supplier,
-							is_internal_customer: frm.doc.is_internal_customer,
-							conversion_rate: frm.doc.conversion_rate,
-							price_list: frm.doc.selling_price_list || frm.doc.buying_price_list,
-							price_list_currency: frm.doc.price_list_currency,
-							plc_conversion_rate: frm.doc.plc_conversion_rate,
-							company: frm.doc.company,
-							order_type: frm.doc.order_type,
-							is_pos: cint(frm.doc.is_pos),
-							is_return: cint(frm.doc.is_return),
-							is_subcontracted: frm.doc.is_subcontracted,
-							ignore_pricing_rule: frm.doc.ignore_pricing_rule,
-							doctype: frm.doc.doctype,
-							name: frm.doc.name,
-							qty: me.doc.qty || 1,
+							qty: me.doc.qty,
 							uom: me.doc.uom,
-							pos_profile: cint(frm.doc.is_pos) ? frm.doc.pos_profile : "",
-							tax_category: frm.doc.tax_category,
-							child_doctype: frm.doc.doctype + " Item",
-						},
+							warehouse: me.doc.warehouse,
+						}),
 					},
 					callback: function (r) {
 						if (r.message) {
@@ -940,24 +1117,8 @@ erpnext.utils.update_child_items = function (opts) {
 				filters: { item_code: row.item_code },
 			}),
 			onchange: function () {
-				frappe.call({
-					method: "erpnext.stock.get_item_details.get_conversion_factor",
-					args: { item_code: this.doc.item_code, uom: this.value },
-					callback: (r) => {
-						if (!r.exc) {
-							if (this.doc.conversion_factor == r.message.conversion_factor) return;
-
-							const docname = this.doc.docname;
-							dialog.fields_dict.trans_items.df.data.some((doc) => {
-								if (doc.docname == docname) {
-									doc.conversion_factor = r.message.conversion_factor;
-									dialog.fields_dict.trans_items.grid.refresh();
-									return true;
-								}
-							});
-						}
-					},
-				});
+				const row = get_dialog_row(this.doc);
+				if (row && this.value) fetch_uom_pricing(row, true);
 			},
 		},
 		{
@@ -968,6 +1129,13 @@ erpnext.utils.update_child_items = function (opts) {
 			in_list_view: 1,
 			label: __("Qty"),
 			precision: get_precision("qty"),
+			onchange: function () {
+				// the price for the new UOM can depend on the qty (pricing rules, packing units)
+				const row = get_dialog_row(this.doc);
+				if (!row) return;
+				if (uom_lookups.has(row.name)) fetch_uom_pricing(row, false);
+				refresh_stale_pricing();
+			},
 		},
 		{
 			fieldtype: "Currency",
@@ -1001,6 +1169,16 @@ erpnext.utils.update_child_items = function (opts) {
 			fieldname: "conversion_factor",
 			label: __("Conversion Factor"),
 			precision: get_precision("conversion_factor"),
+			onchange: function () {
+				const row = get_dialog_row(this.doc);
+				if (!row) return;
+				if (uom_lookups.has(row.name) && flt(row.conversion_factor)) {
+					// the entered factor replaces the UOM's own, and the price follows it
+					uom_lookups.get(row.name).cf_uom = row.uom;
+					fetch_uom_pricing(row, false);
+				}
+				refresh_stale_pricing();
+			},
 		});
 	}
 
@@ -1076,6 +1254,36 @@ erpnext.utils.update_child_items = function (opts) {
 			},
 		],
 		primary_action: function () {
+			// the UOM lookups decide the conversion factor and rate that get submitted
+			if (pending_uom_lookups) {
+				frappe.msgprint(__("Please wait for the UOM changes to finish loading."));
+				return;
+			}
+			const failed_rows = this.fields_dict.trans_items.df.data
+				.filter((d) => failed_uom_lookups.has(d.name))
+				.map((d) => d.idx);
+			if (failed_rows.length) {
+				frappe.msgprint(
+					__(
+						"Could not fetch the conversion factor and price for the UOM in row(s) {0}. Clear the UOM and select it again to retry.",
+						[failed_rows.join(", ")]
+					)
+				);
+				return;
+			}
+			// rows priced before other rows were changed or removed
+			const stale_rows = get_stale_pricing_rows();
+			if (stale_rows.length) {
+				stale_rows.forEach((d) => fetch_uom_pricing(d, false));
+				frappe.msgprint(
+					__(
+						"The prices in row(s) {0} are being refreshed for the changed items. Please review them and click Update again.",
+						[stale_rows.map((d) => d.idx).join(", ")]
+					)
+				);
+				return;
+			}
+
 			if (
 				frm.doctype == "Sales Order" &&
 				has_reserved_stock &&

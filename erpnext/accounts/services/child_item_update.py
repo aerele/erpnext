@@ -9,7 +9,7 @@ from functools import cached_property
 import frappe
 from frappe import _
 from frappe.model.workflow import get_workflow_name
-from frappe.utils import flt, get_link_to_form, getdate
+from frappe.utils import cint, flt, get_link_to_form, getdate
 
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_accounting_dimensions
 from erpnext.buying.utils import update_last_purchase_rate
@@ -125,9 +125,18 @@ class ChildItemUpdater:
 
 				child_item.qty = flt(d.get("qty"))
 				child_item.description = d.get("description")
+				# pricing refreshed in the dialog replaces the saved pricing, even if the row is back on its saved UOM
+				pricing_changed = not new_child_flag and (
+					not (change_state.uom_unchanged and change_state.conversion_factor_unchanged)
+					or cint(d.get("pricing_refreshed"))
+				)
+				if pricing_changed:
+					update_child_item_price_list_rate(child_item, d)
 				update_child_item_rate_and_discount(
 					self.parent_doctype, child_item, d, self.allow_zero_qty, rate_unchanged=rate_unchanged
 				)
+				if pricing_changed:
+					update_child_item_pricing_rules(child_item, d)
 				update_child_item_uom_and_weight(child_item, d)
 
 				if d.get("delivery_date") and self.parent_doctype == "Sales Order":
@@ -720,6 +729,16 @@ def get_child_item_change_state(parent_doctype: str, child_item, new_data) -> fr
 		new_date = getdate(new_date) if new_date else None
 		date_unchanged = prev_date == new_date
 
+	# pricing refreshed in the dialog can change the price list rate and pricing rules but keep the rate
+	pricing_unchanged = not cint(new_data.get("pricing_refreshed")) or (
+		(
+			new_data.get("price_list_rate") is None
+			or flt(child_item.get("price_list_rate"), child_item.precision("price_list_rate"))
+			== flt(new_data.get("price_list_rate"), child_item.precision("price_list_rate"))
+		)
+		and (child_item.get("pricing_rules") or "") == (new_data.get("pricing_rules") or "")
+	)
+
 	return frappe._dict(
 		rate_unchanged=prev_rate == new_rate,
 		qty_unchanged=prev_qty == new_qty,
@@ -728,6 +747,7 @@ def get_child_item_change_state(parent_doctype: str, child_item, new_data) -> fr
 		conversion_factor_unchanged=prev_con_fac == new_con_fac,
 		date_unchanged=date_unchanged,
 		description_unchanged=child_item.get("description") == new_data.get("description"),
+		pricing_unchanged=pricing_unchanged,
 	)
 
 
@@ -740,6 +760,7 @@ def is_child_item_unchanged(change_state: frappe._dict) -> bool:
 		and change_state.uom_unchanged
 		and change_state.date_unchanged
 		and change_state.description_unchanged
+		and change_state.pricing_unchanged
 	)
 
 
@@ -792,6 +813,161 @@ def update_child_item_rate_and_discount(
 		child_item.rate_with_margin = child_item.price_list_rate
 		child_item.discount_percentage = 0
 		child_item.discount_amount = flt(child_item.rate_with_margin) - flt(child_item.rate)
+
+
+def update_child_item_price_list_rate(child_item, new_data) -> None:
+	"""Keep the price list rate in step with a changed UOM / conversion factor."""
+	if new_data.get("price_list_rate") is not None:
+		price_list_rate = flt(new_data.get("price_list_rate"))
+	else:
+		prev_con_fac = flt(child_item.get("conversion_factor")) or 1
+		new_con_fac = flt(new_data.get("conversion_factor")) or prev_con_fac
+		price_list_rate = flt(child_item.get("price_list_rate")) * new_con_fac / prev_con_fac
+
+	child_item.price_list_rate = flt(price_list_rate, child_item.precision("price_list_rate"))
+
+
+PRICING_FIELDS = ("margin_type", "margin_rate_or_amount", "discount_percentage", "discount_amount")
+
+
+def update_child_item_pricing_rules(child_item, new_data) -> None:
+	"""Replace the pricing rules applied for the previous UOM with the ones sent for the new UOM.
+
+	The rules are re-applied when totals are calculated, so they are kept only if their
+	margin and discount still give the submitted rate.
+	"""
+	pricing_rules = new_data.get("pricing_rules") or ""
+	child_item.pricing_rules = ""
+	if not pricing_rules or not flt(child_item.price_list_rate):
+		return
+
+	current = {field: child_item.get(field) for field in PRICING_FIELDS}
+	child_item.update({field: new_data.get(field) for field in PRICING_FIELDS})
+	calculated_rate = set_rate_from_pricing(child_item)
+
+	if calculated_rate == flt(child_item.rate, child_item.precision("rate")):
+		child_item.pricing_rules = pricing_rules
+	else:
+		# rate was edited after the rules were applied, keep it as entered
+		child_item.update(current)
+
+
+def set_rate_from_pricing(child_item) -> float:
+	"""Set the margin and discount fields from the price list rate and return the rate they give.
+
+	Same calculation and rounding as `calculate_item_rate` in taxes_and_totals.
+	"""
+	from erpnext.controllers.taxes_and_totals import get_rate_with_margin
+
+	child_item.margin_type = child_item.margin_type or ""
+	for field in PRICING_FIELDS[1:]:
+		child_item.set(field, flt(child_item.get(field)))
+
+	if not flt(child_item.price_list_rate):
+		child_item.margin_type = ""
+		child_item.margin_rate_or_amount = 0
+		child_item.discount_percentage = 0
+		child_item.discount_amount = 0
+		child_item.rate_with_margin = 0
+		return 0.0
+
+	child_item.rate_with_margin = get_rate_with_margin(child_item)
+	if child_item.discount_percentage > 0:
+		child_item.discount_amount = flt(
+			child_item.rate_with_margin * child_item.discount_percentage / 100.0,
+			child_item.precision("discount_amount"),
+		)
+	return flt(child_item.rate_with_margin - child_item.discount_amount, child_item.precision("rate"))
+
+
+@frappe.whitelist()
+def get_child_item_uom_pricing(
+	ctx: str | dict, doc: str | dict | None = None, row_name: str | None = None
+) -> dict:
+	"""Item details for a UOM changed in the Update Items dialog.
+
+	`doc` is the order as edited in the dialog, and `row_name` the row being priced. That row is
+	given the new UOM's conversion factor and stock qty, so pricing rules that add up the order's
+	rows (mixed conditions) count the edited quantities. A conversion factor sent in `ctx` (entered
+	in the dialog) is kept, otherwise the UOM's own is used.
+
+	Adds `price_found`, as `price_list_rate` is 0 both for a zero price and a missing one,
+	and `rate`, worked out from the price list rate, margin and discount.
+	"""
+	from erpnext.stock.get_item_details import get_item_details
+
+	ctx = frappe._dict(frappe.parse_json(ctx))
+	doc = frappe._dict(frappe.parse_json(doc)) if doc else None
+	if ctx.uom == frappe.get_cached_value("Item", ctx.item_code, "stock_uom"):
+		ctx.conversion_factor = 1
+	else:
+		ctx.conversion_factor = (
+			flt(ctx.conversion_factor)
+			or flt(get_conversion_factor(ctx.item_code, ctx.uom).get("conversion_factor"))
+			or 1
+		)
+
+	if doc and row_name:
+		for row in doc.get("items") or []:
+			if row.get("name") == row_name:
+				row.update(
+					{
+						"uom": ctx.uom,
+						"qty": flt(ctx.qty),
+						"conversion_factor": ctx.conversion_factor,
+						"stock_qty": flt(ctx.qty) * ctx.conversion_factor,
+					}
+				)
+
+	details = get_item_details(ctx, doc)
+
+	child_item = frappe.new_doc(ctx.child_doctype or f"{ctx.doctype} Item")
+	child_item.currency = ctx.currency
+	child_item.price_list_rate = details.price_list_rate
+	child_item.update({field: details.get(field) for field in PRICING_FIELDS})
+	rate = set_rate_from_pricing(child_item)
+
+	details.update({field: child_item.get(field) for field in PRICING_FIELDS})
+	details.update(
+		{
+			"rate_with_margin": child_item.rate_with_margin,
+			"rate": rate,
+			"price_found": bool(flt(details.price_list_rate)) or has_item_price(ctx, doc, details),
+		}
+	)
+	return details
+
+
+def has_item_price(ctx: frappe._dict, doc: frappe._dict | None, details: frappe._dict) -> bool:
+	"""Check for an Item Price the same way `get_item_details` looks for one."""
+	from erpnext.accounts.doctype.pricing_rule.pricing_rule import set_transaction_type
+	from erpnext.stock.get_item_details import get_price_list_rate_for
+
+	price_ctx = frappe._dict(ctx)
+	price_ctx.price_list = ctx.price_list or ctx.selling_price_list or ctx.buying_price_list
+	price_ctx.stock_uom = details.stock_uom or ctx.stock_uom
+	if doc:
+		price_ctx.transaction_date = doc.get("transaction_date") or doc.get("posting_date")
+	if ctx.doctype in ("Purchase Order", "Purchase Receipt", "Purchase Invoice"):
+		price_ctx.customer = None
+	set_transaction_type(price_ctx)
+
+	price_lists = [price_ctx.price_list]
+	if price_ctx.transaction_type == "selling" and frappe.get_single_value(
+		"Selling Settings", "fallback_to_default_price_list"
+	):
+		price_lists.append(frappe.get_single_value("Selling Settings", "selling_price_list"))
+
+	variant_of = frappe.get_cached_value("Item", ctx.item_code, "variant_of")
+	item_codes = [ctx.item_code, variant_of] if variant_of else [ctx.item_code]
+
+	for price_list in filter(None, price_lists):
+		price_ctx.price_list = price_list
+		for item_code in item_codes:
+			if get_price_list_rate_for(price_ctx, item_code) is not None:
+				return True
+
+	return False
 
 
 def update_child_item_uom_and_weight(child_item, new_data) -> None:
