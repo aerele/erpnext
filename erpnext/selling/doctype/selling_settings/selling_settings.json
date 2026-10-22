@@ -44,6 +44,7 @@
   "dont_reserve_sales_order_qty_on_sales_return",
   "enable_cutoff_date_on_bulk_delivery_note_creation",
   "set_zero_rate_for_expired_batch",
+  "use_valuation_rate_for_standalone_return",
   "section_break_zero_qty",
   "allow_zero_qty_in_quotation",
   "column_break_zwvf",
@@ -330,6 +331,13 @@
   },
   {
    "default": "0",
+   "description": "If enabled, the incoming rate of stand-alone credit notes and sales returns is always set to the current valuation rate of each item, batch and serial no, overriding the entered rate.",
+   "fieldname": "use_valuation_rate_for_standalone_return",
+   "fieldtype": "Check",
+   "label": "Use valuation rate as incoming rate for stand-alone returns"
+  },
+  {
+   "default": "0",
    "description": "Manage sales partner's and sales team's commissions",
    "fieldname": "enable_tracking_sales_commissions",
    "fieldtype": "Check",
@@ -453,7 +461,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-23 12:00:00.000000",
+ "modified": "2026-10-17 21:57:00.000000",
  "modified_by": "Administrator",
  "module": "Selling",
  "name": "Selling Settings",

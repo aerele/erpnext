@@ -71,6 +71,7 @@ class SellingSettings(Document):
 		so_required: DF.Literal["No", "Yes"]
 		territory: DF.Link | None
 		use_legacy_js_reactivity: DF.Check
+		use_valuation_rate_for_standalone_return: DF.Check
 		validate_selling_price: DF.Check
 	# end: auto-generated types
 

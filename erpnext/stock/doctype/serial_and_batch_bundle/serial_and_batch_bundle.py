@@ -938,7 +938,7 @@ class SerialandBatchBundle(Document):
 			# over the accepted quantity does not belong to it.
 			rate = flt(self.get_transit_rate(row)) or rate
 
-		transfer_rates = self.get_transfer_rates()
+		transfer_rates = self.get_transfer_rates() or self.get_standalone_return_rates(row)
 		precision = frappe.get_precision("Serial and Batch Entry", "incoming_rate")
 		for d in self.entries:
 			is_queue_valued = valuation_method in ("FIFO", "LIFO") and d.batch_no in batches
@@ -956,7 +956,7 @@ class SerialandBatchBundle(Document):
 			):
 				continue
 
-			if is_packed_item and d.incoming_rate:
+			if is_packed_item and d.incoming_rate and not transfer_rates:
 				entry_rate = d.incoming_rate
 
 			d.incoming_rate = flt(entry_rate)
@@ -1296,6 +1296,49 @@ class SerialandBatchBundle(Document):
 				fields=["serial_no", "batch_no", "incoming_rate"],
 			)
 		}
+
+	def get_standalone_return_rates(self, row=None) -> dict:
+		"""Valuation rate of each serial/batch of a stand-alone sales return, if enabled in Selling Settings."""
+		from erpnext.stock.utils import get_standalone_return_rates, use_valuation_rate_for_standalone_return
+
+		if self.voucher_type not in ("Sales Invoice", "Delivery Note") or not self.voucher_no:
+			return {}
+
+		parent = frappe.db.get_value(
+			self.voucher_type,
+			self.voucher_no,
+			["is_return", "return_against", "is_internal_customer"],
+			as_dict=True,
+		)
+		if not parent or not use_valuation_rate_for_standalone_return(parent):
+			return {}
+
+		# the ledger values the bundle after inserting its own entry, which must not count as previous
+		sle = (
+			frappe.db.get_value(
+				"Stock Ledger Entry",
+				{"serial_and_batch_bundle": self.name, "is_cancelled": 0},
+				["name", "creation"],
+				as_dict=True,
+			)
+			or frappe._dict()
+		)
+
+		return get_standalone_return_rates(
+			{
+				"item_code": self.item_code,
+				"warehouse": self.warehouse,
+				"posting_datetime": self.posting_datetime,
+				"company": self.company,
+				"voucher_type": self.voucher_type,
+				"voucher_no": self.voucher_no,
+				"voucher_detail_no": self.voucher_detail_no,
+				"allow_zero_valuation": row.get("allow_zero_valuation_rate") if row else 0,
+				"sle": sle.name,
+				"creation": sle.creation,
+			},
+			self.entries,
+		)
 
 	def get_transit_rate(self, row) -> float:
 		"""What the material was worth on its way into the in-transit warehouse."""

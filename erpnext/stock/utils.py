@@ -485,6 +485,67 @@ def _get_incoming_rate(args: dict | str, raise_error_if_no_rate: bool = True, fa
 	return flt(in_rate)
 
 
+def get_standalone_return_rate(args: dict) -> float:
+	"""Valuation rate of a lot in a stand-alone sales return, else the item's rate in the warehouse."""
+	# negative qty values the lot from the ledger instead of the bundle's own total
+	args = frappe._dict(args, qty=-abs(flt(args.get("qty"))))
+	if rate := _get_incoming_rate(args.copy(), raise_error_if_no_rate=False, fallbacks=False):
+		return rate
+
+	args.update(batch_no=None, serial_no=None, serial_and_batch_bundle=None)
+	return _get_incoming_rate(args, raise_error_if_no_rate=True, fallbacks=True)
+
+
+def get_standalone_return_rates(args: dict, lots: list) -> dict:
+	"""Rate per (serial_no, batch_no) of a stand-alone sales return; lots not valued on their own share the item rate."""
+	serial_no_wise = frappe.get_cached_value("Item", args.get("item_code"), "use_serial_no_wise_valuation")
+	batchwise = set(
+		frappe.get_all(
+			"Batch",
+			filters={"name": ("in", [d.batch_no for d in lots if d.batch_no]), "use_batchwise_valuation": 1},
+			pluck="name",
+		)
+	)
+
+	# bundle entries hold Serial No names, the lookup matches the physical number
+	serial_numbers = dict(
+		frappe.get_all(
+			"Serial No",
+			filters={"name": ("in", [d.serial_no for d in lots if d.serial_no])},
+			fields=["name", "serial_no"],
+			as_list=True,
+		)
+	)
+
+	rates, pooled_qty = {}, 0.0
+	for d in lots:
+		if (serial_no_wise and d.serial_no) or d.batch_no in batchwise:
+			serial_no = serial_numbers.get(d.serial_no, d.serial_no)
+			lot_args = {**args, "serial_no": serial_no, "batch_no": d.batch_no, "qty": d.qty}
+			rates[(d.serial_no, d.batch_no)] = get_standalone_return_rate(lot_args)
+		else:
+			pooled_qty += abs(flt(d.qty))
+
+	if pooled_qty:
+		item_rate = get_standalone_return_rate(
+			{**args, "qty": pooled_qty, "batch_no": None, "serial_no": None}
+		)
+		for d in lots:
+			rates.setdefault((d.serial_no, d.batch_no), item_rate)
+
+	return rates
+
+
+def use_valuation_rate_for_standalone_return(doc) -> bool:
+	"""Whether a sales return without a reference is valued at the valuation rate as per Selling Settings."""
+	return bool(
+		doc.get("is_return")
+		and not doc.get("return_against")
+		and not doc.get("is_internal_customer")
+		and frappe.db.get_single_value("Selling Settings", "use_valuation_rate_for_standalone_return")
+	)
+
+
 def has_batchwise_valued_batch(batch_no: str | None, serial_and_batch_bundle: str | None) -> bool:
 	"""Pooling applies to Moving Average batches only; FIFO batches keep batch-wise valuation."""
 	batches = [batch_no] if batch_no else []

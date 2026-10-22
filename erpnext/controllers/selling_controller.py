@@ -14,7 +14,13 @@ from erpnext.controllers.stock_controller import StockController
 from erpnext.selling.doctype.customer.customer import is_customer_blocked
 from erpnext.stock.doctype.item.item import set_item_default, validate_item_uoms
 from erpnext.stock.get_item_details import get_bin_details, get_conversion_factor
-from erpnext.stock.utils import _get_incoming_rate, get_combine_datetime, get_valuation_method
+from erpnext.stock.utils import (
+	_get_incoming_rate,
+	get_combine_datetime,
+	get_standalone_return_rates,
+	get_valuation_method,
+	use_valuation_rate_for_standalone_return,
+)
 
 
 class SellingController(StockController):
@@ -597,6 +603,7 @@ class SellingController(StockController):
 		)
 
 		is_standalone = self.is_return and not self.return_against
+		use_valuation_rate = use_valuation_rate_for_standalone_return(self)
 
 		old_doc = self.get_doc_before_save()
 		items = self.get("items") + (self.get("packed_items") or [])
@@ -618,6 +625,9 @@ class SellingController(StockController):
 			):
 				# set incoming rate as zero for stand-lone credit note with expired batch
 				d.incoming_rate = 0
+
+			elif use_valuation_rate:
+				d.incoming_rate = self.get_standalone_return_rate(d)
 
 			elif not self.get("return_against") or (
 				get_valuation_method(d.item_code, self.company) == "Moving Average"
@@ -717,6 +727,45 @@ class SellingController(StockController):
 				d.incoming_rate = get_rate_for_return(
 					self.doctype, self.name, d.item_code, self.return_against, item_row=d
 				)
+
+	def get_standalone_return_rate(self, row) -> float:
+		"""Valuation rate of a stand-alone return row, weighted over its serial and batch nos."""
+		from erpnext.stock.doctype.serial_no.serial_no import get_serial_nos
+
+		qty = abs(flt(row.get("stock_qty") or row.get("qty")))
+		lots = []
+		if row.serial_and_batch_bundle:
+			lots = frappe.get_all(
+				"Serial and Batch Entry",
+				filters={"parent": row.serial_and_batch_bundle},
+				fields=["serial_no", "batch_no", "qty"],
+			)
+		elif serial_nos := get_serial_nos(row.serial_no):
+			lots = [frappe._dict(serial_no=s, batch_no=row.batch_no, qty=1) for s in serial_nos]
+
+		if not lots:
+			lots = [frappe._dict(serial_no=None, batch_no=row.batch_no, qty=qty)]
+
+		rates = get_standalone_return_rates(
+			{
+				"item_code": row.item_code,
+				"warehouse": row.warehouse,
+				"posting_date": self.posting_date,
+				"posting_time": self.posting_time or nowtime(),
+				"company": self.company,
+				"voucher_type": self.doctype,
+				"voucher_no": self.name,
+				"voucher_detail_no": row.name,
+				"allow_zero_valuation": row.get("allow_zero_valuation_rate"),
+			},
+			lots,
+		)
+
+		total_qty = sum(abs(flt(d.qty)) for d in lots)
+		if not total_qty:
+			return 0.0
+
+		return sum(rates[(d.serial_no, d.batch_no)] * abs(flt(d.qty)) for d in lots) / total_qty
 
 	def update_stock_ledger(self, allow_negative_stock=False):
 		self.update_reserved_qty()
