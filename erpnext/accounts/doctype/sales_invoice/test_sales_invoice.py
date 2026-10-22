@@ -5555,6 +5555,123 @@ class TestSalesInvoice(ERPNextTestSuite):
 		)
 		self.assertEqual(incoming_rate, 100.0)
 
+	@ERPNextTestSuite.change_settings("Selling Settings", {"use_valuation_rate_for_standalone_return": 1})
+	def test_stand_alone_credit_note_forced_valuation_rate(self):
+		item_code = "_Test Item for Forced Credit Note Valuation"
+		make_item_for_si(item_code, {"valuation_method": "FIFO"})
+		make_stock_entry(item_code=item_code, target="_Test Warehouse - _TC", qty=5, basic_rate=100)
+
+		si = create_sales_invoice(
+			item=item_code, qty=-2, rate=1200, incoming_rate=999, is_return=1, update_stock=1
+		)
+
+		self.assertEqual(si.items[0].incoming_rate, 100.0)
+		stock_value_difference = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_type": "Sales Invoice", "voucher_no": si.name},
+			"stock_value_difference",
+		)
+		self.assertEqual(stock_value_difference, 200.0)
+
+	@ERPNextTestSuite.change_settings("Selling Settings", {"use_valuation_rate_for_standalone_return": 1})
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings", {"do_not_use_batchwise_valuation": 0, "use_serial_batch_fields": 1}
+	)
+	def test_stand_alone_credit_note_forced_valuation_rate_for_batches(self):
+		item_code = "_Test Item for Forced Credit Note Batch Valuation"
+		make_item_for_si(
+			item_code,
+			{
+				"valuation_method": "FIFO",
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "TBATCH-FCNBV.####",
+			},
+		)
+
+		batches = []
+		for rate in (100, 300):
+			se = make_stock_entry(item_code=item_code, target="_Test Warehouse - _TC", qty=5, basic_rate=rate)
+			batches.append(get_batch_from_bundle(se.items[0].serial_and_batch_bundle))
+
+		# a batch without stock history takes the item's valuation rate
+		new_batch = frappe.get_doc({"doctype": "Batch", "item": item_code}).insert().name
+
+		si = create_sales_invoice(
+			item=item_code,
+			qty=-1,
+			rate=1200,
+			incoming_rate=999,
+			is_return=1,
+			update_stock=1,
+			use_serial_batch_fields=1,
+			do_not_save=1,
+		)
+		row = si.items[0]
+		row.batch_no = new_batch
+		for batch_no in batches:
+			si.append(
+				"items",
+				{
+					"item_code": item_code,
+					"qty": -1,
+					"rate": 1200,
+					"incoming_rate": 999,
+					"warehouse": row.warehouse,
+					"income_account": row.income_account,
+					"expense_account": row.expense_account,
+					"cost_center": row.cost_center,
+					"use_serial_batch_fields": 1,
+					"batch_no": batch_no,
+				},
+			)
+		si.insert()
+		si.submit()
+
+		expected = {new_batch: 200.0, batches[0]: 100.0, batches[1]: 300.0}
+		for d in si.items:
+			self.assertEqual(d.incoming_rate, expected[d.batch_no])
+			stock_value_difference = frappe.db.get_value(
+				"Stock Ledger Entry",
+				{"voucher_no": si.name, "voucher_detail_no": d.name},
+				"stock_value_difference",
+			)
+			self.assertEqual(stock_value_difference, expected[d.batch_no])
+
+	@ERPNextTestSuite.change_settings("Selling Settings", {"use_valuation_rate_for_standalone_return": 1})
+	def test_stand_alone_credit_note_forced_valuation_rate_for_serial_nos(self):
+		item_code = "_Test Item for Forced Credit Note Serial Valuation"
+		make_item_for_si(
+			item_code,
+			{"has_serial_no": 1, "use_serial_no_wise_valuation": 1, "serial_no_series": "TSN-FCNSV.####"},
+		)
+
+		serial_nos = []
+		for rate in (100, 300):
+			se = make_stock_entry(item_code=item_code, target="_Test Warehouse - _TC", qty=1, basic_rate=rate)
+			serial_nos += get_serial_nos_from_bundle(se.items[0].serial_and_batch_bundle)
+
+		create_sales_invoice(item=item_code, qty=2, rate=1200, update_stock=1, serial_no=serial_nos)
+		si = create_sales_invoice(
+			item=item_code,
+			qty=-2,
+			rate=1200,
+			incoming_rate=999,
+			is_return=1,
+			update_stock=1,
+			serial_no=serial_nos,
+		)
+
+		# each serial no comes back at its own cost, the row at their average
+		self.assertEqual(si.items[0].incoming_rate, 200.0)
+		entries = frappe.get_all(
+			"Serial and Batch Entry",
+			filters={"parent": si.items[0].serial_and_batch_bundle},
+			fields=["serial_no", "incoming_rate"],
+		)
+		rates = {d.serial_no: d.incoming_rate for d in entries}
+		self.assertEqual(rates, {serial_nos[0]: 100.0, serial_nos[1]: 300.0})
+
 	def test_system_generated_exchange_gain_or_loss_je_after_repost(self):
 		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 		from erpnext.accounts.doctype.repost_accounting_ledger.test_repost_accounting_ledger import (
