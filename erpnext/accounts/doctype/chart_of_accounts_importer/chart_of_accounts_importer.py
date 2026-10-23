@@ -481,15 +481,18 @@ def unset_existing_data(company):
 	frappe.db.set_value("Company", company, update_values, update_values)
 
 	# remove accounts data from various doctypes
-	for doctype in [
-		"Account",
-		"Sales Taxes and Charges Template",
-		"Purchase Taxes and Charges Template",
-		"Party Account",
-		"Mode of Payment Account",
-		"Tax Withholding Account",
-	]:
+	for doctype in ["Party Account", "Mode of Payment Account", "Tax Withholding Account"]:
 		frappe.get_query(doctype, delete=True, filters={"company": company}).run()
+
+	for doctype in ["Sales Taxes and Charges Template", "Purchase Taxes and Charges Template", "Account"]:
+		# Delete child accounts before their parents, retaining document link checks and hooks.
+		for name in frappe.get_all(
+			doctype,
+			filters={"company": company},
+			pluck="name",
+			order_by="lft desc" if doctype == "Account" else None,
+		):
+			frappe.delete_doc(doctype, name)
 
 
 def validate_user_perms(company):
