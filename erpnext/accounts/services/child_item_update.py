@@ -13,6 +13,7 @@ from frappe.utils import flt, get_link_to_form, getdate
 
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_accounting_dimensions
 from erpnext.buying.utils import update_last_purchase_rate
+from erpnext.setup.doctype.uom.uom import validate_row_uoms_are_enabled
 from erpnext.stock.doctype.item.item import validate_item_uoms
 from erpnext.stock.doctype.packed_item.packed_item import make_packing_list
 from erpnext.stock.get_item_details import (
@@ -123,6 +124,7 @@ class ChildItemUpdater:
 					if new_child_flag:
 						child_item.fg_item = d["fg_item"]
 
+				old_row = None if new_child_flag else child_item.as_dict()
 				child_item.qty = flt(d.get("qty"))
 				child_item.description = d.get("description")
 				update_child_item_rate_and_discount(
@@ -143,8 +145,10 @@ class ChildItemUpdater:
 				if new_child_flag:
 					self.parent.load_from_db()
 					child_item.idx = len(self.parent.items) + 1
+					validate_row_uoms_are_enabled(self.parent, child_item)
 					child_item.insert()
 				else:
+					validate_row_uoms_are_enabled(self.parent, child_item, old_row)
 					child_item.save(ignore_permissions=True)
 					self._sync_delivery_schedule(child_item, change_state)
 

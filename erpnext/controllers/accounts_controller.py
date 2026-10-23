@@ -54,6 +54,7 @@ from erpnext.controllers.print_settings import (
 	set_print_templates_for_taxes,
 )
 from erpnext.controllers.sales_and_purchase_return import validate_return
+from erpnext.setup.doctype.uom.uom import validate_uoms_are_enabled
 from erpnext.setup.utils import get_exchange_rate
 from erpnext.stock.doctype.item.item import get_uom_conv_factor
 from erpnext.stock.get_item_details import _get_item_details
@@ -285,6 +286,7 @@ class AccountsController(TransactionBase):
 		if self.get("_action") and self._action != "update_after_submit":
 			self.set_missing_values(for_validate=True)
 
+		validate_uoms_are_enabled(self)
 		self.validate_price_list()
 
 		if self.get("_action") == "submit":
