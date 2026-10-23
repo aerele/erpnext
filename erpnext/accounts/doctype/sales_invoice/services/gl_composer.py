@@ -117,11 +117,7 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 	def _append_item_discount_gl_entries(self, item, gl_entries) -> None:
 		doc = self.doc
 		discount_amount = item.discount_amount * item.qty
-		income_account = (
-			item.income_account
-			if (not item.enable_deferred_revenue or doc.is_return)
-			else item.deferred_revenue_account
-		)
+		income_account = self._get_item_income_account(item)
 
 		account_currency = get_account_currency(item.discount_account)
 		gl_entries.append(
@@ -155,6 +151,7 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 					"credit_in_transaction_currency": flt(discount_amount, item.precision("discount_amount")),
 					"cost_center": item.cost_center,
 					"project": item.project or doc.project,
+					"voucher_detail_no": self._get_deferred_return_detail_no(item, income_account),
 				},
 				account_currency,
 				item=item,
@@ -376,11 +373,7 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 
 	def _append_item_income_gl_entry(self, item, gl_entries, tax_service, enable_discount_accounting) -> None:
 		doc = self.doc
-		income_account = (
-			item.income_account
-			if (not item.enable_deferred_revenue or doc.is_return)
-			else item.deferred_revenue_account
-		)
+		income_account = self._get_item_income_account(item)
 
 		amount, base_amount = tax_service.get_amount_and_base_amount(item, enable_discount_accounting)
 
@@ -399,11 +392,59 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 					"credit_in_transaction_currency": flt(amount, item.precision("net_amount")),
 					"cost_center": item.cost_center,
 					"project": item.project or doc.project,
+					"voucher_detail_no": self._get_deferred_return_detail_no(item, income_account),
 				},
 				account_currency,
 				item=item,
 			)
 		)
+
+	def _get_item_income_account(self, item):
+		if not item.enable_deferred_revenue:
+			return item.income_account
+
+		if not self.doc.is_return or self._has_unbooked_deferred_revenue(item):
+			return item.deferred_revenue_account
+
+		return item.income_account
+
+	def _get_deferred_return_detail_no(self, item, income_account):
+		if self.doc.is_return and income_account == item.deferred_revenue_account:
+			return item.name
+
+	def _has_unbooked_deferred_revenue(self, item):
+		from erpnext.accounts.deferred_revenue import get_already_booked_amount, get_deferred_amount_returned
+
+		# a credit note goes back to deferred revenue only if the original row still has that much unbooked
+		doc = self.doc
+		if not (item.get("sales_invoice_item") and doc.return_against):
+			return False
+
+		original = frappe.db.get_value(
+			"Sales Invoice Item",
+			item.sales_invoice_item,
+			["name", "base_net_amount", "enable_deferred_revenue", "deferred_revenue_account"],
+			as_dict=True,
+		)
+		if not (
+			original
+			and original.enable_deferred_revenue
+			and original.deferred_revenue_account == item.deferred_revenue_account
+		):
+			return False
+
+		original_doc = frappe._dict(
+			doctype=doc.doctype,
+			name=doc.return_against,
+			company=doc.company,
+			currency=doc.currency,
+			company_currency=doc.company_currency,
+		)
+		booked = get_already_booked_amount(original_doc, original)[0]
+		returned = get_deferred_amount_returned(doc.company, original, exclude_voucher=doc.name)[0]
+
+		unbooked = flt(original.base_net_amount) - flt(booked) - returned
+		return flt(unbooked - abs(flt(item.base_net_amount)), item.precision("base_net_amount")) >= 0
 
 	def get_gl_entries_for_fixed_asset(self, item, gl_entries):
 		doc = self.doc

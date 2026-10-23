@@ -283,10 +283,23 @@ def calculate_amount(doc, item, last_gl_entry, total_days, total_booking_days, a
 		base_amount = flt(
 			item.base_net_amount * total_booking_days / flt(total_days), item.precision("base_net_amount")
 		)
+		already_booked_amount, already_booked_amount_in_account_currency = get_already_booked_amount(
+			doc, item
+		)
+		# a credit note may have taken part of the balance, so never book more than what is left
+		base_amount = min(
+			base_amount, flt(item.base_net_amount - already_booked_amount, item.precision("base_net_amount"))
+		)
 		if account_currency == doc.company_currency:
 			amount = base_amount
 		else:
 			amount = flt(item.net_amount * total_booking_days / flt(total_days), item.precision("net_amount"))
+			amount = min(
+				amount,
+				flt(
+					item.net_amount - already_booked_amount_in_account_currency, item.precision("net_amount")
+				),
+			)
 	else:
 		already_booked_amount, already_booked_amount_in_account_currency = get_already_booked_amount(
 			doc, item
@@ -368,6 +381,35 @@ def get_already_booked_amount(doc, item):
 		)
 
 	return already_booked_amount, already_booked_amount_in_account_currency
+
+
+def get_deferred_amount_returned(company, item, exclude_voucher=None):
+	gle = frappe.qb.DocType("GL Entry")
+	sii = frappe.qb.DocType("Sales Invoice Item")
+	query = (
+		frappe.qb.from_(gle)
+		.inner_join(sii)
+		.on(gle.voucher_detail_no == sii.name)
+		.select(
+			Sum(gle.debit - gle.credit).as_("amount"),
+			Sum(gle.debit_in_account_currency - gle.credit_in_account_currency).as_(
+				"amount_in_account_currency"
+			),
+		)
+		.where(
+			(gle.company == company)
+			& (gle.account == item.deferred_revenue_account)
+			& (gle.voucher_type == "Sales Invoice")
+			& (gle.is_cancelled == 0)
+			& (sii.sales_invoice_item == item.name)
+			& (sii.docstatus == 1)
+		)
+	)
+	if exclude_voucher:
+		query = query.where(gle.voucher_no != exclude_voucher)
+
+	returned = query.run(as_dict=True)
+	return flt(returned[0].amount), flt(returned[0].amount_in_account_currency)
 
 
 def book_deferred_income_or_expense(doc, deferred_process, posting_date=None):
@@ -479,6 +521,12 @@ def book_deferred_income_or_expense(doc, deferred_process, posting_date=None):
 
 	for item in doc.get("items"):
 		if item.get(enable_check):
+			if doc.doctype == "Sales Invoice":
+				# credit notes that went back to deferred revenue are not recognised as income
+				returned, returned_in_account_currency = get_deferred_amount_returned(doc.company, item)
+				item.base_net_amount -= returned
+				item.net_amount -= returned_in_account_currency
+
 			_book_deferred_revenue_or_expense(
 				item, via_journal_entry, submit_journal_entry, book_deferred_entries_based_on
 			)
