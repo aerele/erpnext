@@ -791,10 +791,11 @@ def get_workstation_oee(workstation: str) -> dict | None:
 
 
 def _get_run_and_ideal_minutes(workstation, today) -> tuple[float, float, set]:
-	"""Sum actual run minutes (clipped to today) and the ideal minutes for produced qty."""
+	"""Count overlapping run intervals once and sum ideal minutes for produced qty."""
 	today_start = get_datetime(f"{today} 00:00:00")
 	today_end = get_datetime(f"{today} 23:59:59")
 	now = now_datetime()
+	run_end = today_start
 	actual_run_min = 0.0
 	ideal_min = 0.0
 	worked_job_cards = set()
@@ -803,15 +804,19 @@ def _get_run_and_ideal_minutes(workstation, today) -> tuple[float, float, set]:
 		start = max(get_datetime(log.from_time), today_start)
 		end = min(get_datetime(log.to_time) if log.to_time else now, today_end)
 		if end > start:
-			actual_run_min += time_diff_in_seconds(end, start) / 60
 			worked_job_cards.add(log.job_card)
+			# Operator logs can overlap on the same workstation.
+			start = max(start, run_end)
+			if end > start:
+				actual_run_min += time_diff_in_seconds(end, start) / 60
+				run_end = end
 		if log.completed_qty and log.for_quantity and log.time_required:
 			ideal_min += (flt(log.time_required) / flt(log.for_quantity)) * flt(log.completed_qty)
 	return actual_run_min, ideal_min, worked_job_cards
 
 
 def _get_oee_time_logs(workstation, today_start, today_end) -> list[dict]:
-	"""Job Card time logs whose interval overlaps today's window."""
+	"""Job Card time logs overlapping today's window, ordered by start time."""
 	tl = frappe.qb.DocType("Job Card Time Log")
 	jc = frappe.qb.DocType("Job Card")
 	return (
@@ -830,6 +835,7 @@ def _get_oee_time_logs(workstation, today_start, today_end) -> list[dict]:
 		.where(jc.docstatus < 2)
 		.where(tl.from_time <= today_end)
 		.where(tl.to_time.isnull() | (tl.to_time >= today_start))
+		.orderby(tl.from_time)
 	).run(as_dict=True)
 
 
