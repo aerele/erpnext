@@ -3140,6 +3140,87 @@ class TestSalesInvoice(ERPNextTestSuite):
 
 		check_gl_entries(self, si.name, expected_gle, "2019-01-30")
 
+	def test_deferred_revenue_with_credit_note(self):
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		deferred_account = create_account(
+			account_name="Deferred Revenue",
+			parent_account="Current Liabilities - _TC",
+			company="_Test Company",
+		)
+
+		item = create_item("_Test Item for Deferred Accounting")
+		item.enable_deferred_revenue = 1
+		item.item_defaults[0].deferred_revenue_account = deferred_account
+		item.no_of_months = 12
+		item.save()
+
+		si = create_sales_invoice(
+			item=item.name, posting_date="2019-01-10", qty=5, rate=20, do_not_submit=True
+		)
+		si.items[0].enable_deferred_revenue = 1
+		si.items[0].service_start_date = "2019-01-10"
+		si.items[0].service_end_date = "2019-03-15"
+		si.items[0].deferred_revenue_account = deferred_account
+		si.save()
+		si.submit()
+
+		credit_note = make_return_doc(si.doctype, si.name)
+		credit_note.set_posting_time = 1
+		credit_note.posting_date = "2019-01-20"
+		credit_note.items[0].qty = -2
+		credit_note.save()
+		credit_note.submit()
+
+		expected_gle = [
+			["Debtors - _TC", 0.0, 40.0, "2019-01-20"],
+			[deferred_account, 40.0, 0.0, "2019-01-20"],
+		]
+		check_gl_entries(self, credit_note.name, expected_gle, "2019-01-20")
+
+		pda = frappe.get_doc(
+			doctype="Process Deferred Accounting",
+			posting_date=nowdate(),
+			start_date="2019-01-01",
+			end_date="2019-03-31",
+			type="Income",
+			company="_Test Company",
+		)
+		pda.insert()
+		pda.submit()
+
+		expected_gle = [
+			[deferred_account, 20.31, 0.0, "2019-01-31"],
+			["Sales - _TC", 0.0, 20.31, "2019-01-31"],
+			[deferred_account, 25.85, 0.0, "2019-02-28"],
+			["Sales - _TC", 0.0, 25.85, "2019-02-28"],
+			[deferred_account, 13.84, 0.0, "2019-03-15"],
+			["Sales - _TC", 0.0, 13.84, "2019-03-15"],
+		]
+		check_gl_entries(self, si.name, expected_gle, "2019-01-30")
+
+		# once everything is recognised, a further credit note reverses income directly
+		late_credit_note = make_return_doc(si.doctype, si.name)
+		late_credit_note.set_posting_time = 1
+		late_credit_note.posting_date = "2019-04-05"
+		late_credit_note.items[0].qty = -1
+		late_credit_note.save()
+		late_credit_note.submit()
+
+		expected_gle = [
+			["Debtors - _TC", 0.0, 20.0, "2019-04-05"],
+			["Sales - _TC", 20.0, 0.0, "2019-04-05"],
+		]
+		check_gl_entries(self, late_credit_note.name, expected_gle, "2019-04-05")
+
+		for account, expected_balance in ((deferred_account, 0.0), ("Sales - _TC", 40.0)):
+			balance = frappe.db.sql(
+				"""select sum(credit - debit) from `tabGL Entry`
+				where voucher_no in (%s, %s, %s) and account = %s and is_cancelled = 0""",
+				(si.name, credit_note.name, late_credit_note.name, account),
+			)[0][0]
+			self.assertEqual(flt(balance), expected_balance)
+
 	def test_deferred_revenue_missing_account(self):
 		si = create_sales_invoice(posting_date="2019-01-10", do_not_submit=True)
 		si.items[0].enable_deferred_revenue = 1
