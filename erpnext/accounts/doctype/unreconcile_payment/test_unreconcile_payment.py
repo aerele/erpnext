@@ -8,6 +8,7 @@ from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_pay
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.accounts.party import get_party_account
 from erpnext.accounts.test.accounts_mixin import AccountsTestMixin
+from erpnext.buying.doctype.purchase_order.mapper import make_purchase_invoice
 from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
 from erpnext.selling.doctype.sales_order.mapper import make_sales_invoice
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
@@ -550,6 +551,109 @@ class TestUnreconcilePayment(ERPNextTestSuite, AccountsTestMixin):
 				"Advance Payment Ledger Entry",
 				{"voucher_no": pe.name, "against_voucher_no": so.name, "delinked": 0},
 			)
+		)
+
+	def test_unreconcile_reconciled_journal_advance(self):
+		for party_type in ("Customer", "Supplier"):
+			for allocated_amount in (1000, 400):
+				with self.subTest(party_type=party_type, allocated_amount=allocated_amount):
+					self.check_reconciled_journal_advance_unreconciliation(party_type, allocated_amount)
+
+	def check_reconciled_journal_advance_unreconciliation(self, party_type, allocated_amount):
+		if party_type == "Customer":
+			order = self.create_sales_order()
+			party = self.customer
+			party_amount_field = "credit_in_account_currency"
+			cash_amount_field = "debit_in_account_currency"
+		else:
+			order = create_purchase_order(
+				company=self.company,
+				supplier=self.supplier,
+				item=self.item,
+				qty=10,
+				rate=100,
+				transaction_date=today(),
+				do_not_submit=False,
+			)
+			party = self.supplier
+			party_amount_field = "debit_in_account_currency"
+			cash_amount_field = "credit_in_account_currency"
+
+		account = get_party_account(party_type, party, self.company)
+		journal = (
+			frappe.get_doc(
+				{
+					"doctype": "Journal Entry",
+					"company": self.company,
+					"posting_date": today(),
+					"accounts": [
+						{
+							"account": account,
+							"party_type": party_type,
+							"party": party,
+							party_amount_field: 1000,
+							"is_advance": "Yes",
+							"reference_type": order.doctype,
+							"reference_name": order.name,
+						},
+						{"account": self.cash, cash_amount_field: 1000},
+					],
+				}
+			)
+			.insert()
+			.submit()
+		)
+		self.assertEqual(order.reload().advance_paid, 1000)
+
+		invoice = (
+			make_sales_invoice(order.name) if party_type == "Customer" else make_purchase_invoice(order.name)
+		)
+		invoice.insert().submit()
+		reconciliation = frappe.get_doc(
+			{
+				"doctype": "Payment Reconciliation",
+				"company": self.company,
+				"party_type": party_type,
+				"party": party,
+				"receivable_payable_account": account,
+			}
+		)
+		reconciliation.get_unreconciled_entries()
+		reconciliation.allocate_entries(
+			frappe._dict(
+				invoices=[x.as_dict() for x in reconciliation.invoices if x.invoice_number == invoice.name],
+				payments=[x.as_dict() for x in reconciliation.payments if x.reference_name == journal.name],
+			)
+		)
+		self.assertEqual(len(reconciliation.allocation), 1)
+		reconciliation.allocation[0].allocated_amount = allocated_amount
+		reconciliation.reconcile()
+		self.assertEqual(order.reload().advance_paid, 1000)
+		self.assertEqual(invoice.reload().outstanding_amount, 1000 - allocated_amount)
+
+		unreconcile = frappe.get_doc(
+			{
+				"doctype": "Unreconcile Payment",
+				"company": self.company,
+				"voucher_type": journal.doctype,
+				"voucher_no": journal.name,
+			}
+		)
+		unreconcile.add_references()
+		unreconcile.allocations = [x for x in unreconcile.allocations if x.reference_name == invoice.name]
+		self.assertEqual(len(unreconcile.allocations), 1)
+		unreconcile.save().submit()
+
+		self.assertEqual(order.reload().advance_paid, 1000 - allocated_amount)
+		self.assertEqual(invoice.reload().outstanding_amount, 1000)
+		self.assertEqual(
+			frappe.db.get_all(
+				"Advance Payment Ledger Entry",
+				filters={"voucher_no": journal.name, "against_voucher_no": order.name, "delinked": 0},
+				fields=[{"SUM": "amount", "as": "amount"}],
+			)[0].amount
+			or 0,
+			allocated_amount - 1000,
 		)
 
 	def test_unreconcile_advance_from_journal_entry(self):
