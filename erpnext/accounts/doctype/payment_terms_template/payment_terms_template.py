@@ -33,7 +33,10 @@ class PaymentTermsTemplate(Document):
 	def validate_invoice_portion(self):
 		total_portion = 0
 		for term in self.terms:
-			total_portion += flt(term.get("invoice_portion", 0))
+			invoice_portion = flt(term.get("invoice_portion", 0))
+			if not 0 <= invoice_portion <= 100:
+				frappe.throw(_("Row {0}: Invoice Portion must be between 0 and 100.").format(term.idx))
+			total_portion += invoice_portion
 
 		if flt(total_portion, 2) != 100.00:
 			frappe.msgprint(_("Combined invoice portion must equal 100%"), raise_exception=1, indicator="red")
