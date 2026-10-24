@@ -1044,41 +1044,48 @@ def remove_ref_doc_link_from_jv(
 ):
 	jea = qb.DocType("Journal Entry Account")
 
-	linked_jv = (
+	query = (
 		qb.from_(jea)
-		.select(jea.parent)
+		.select(jea.name, jea.parent, jea.advance_voucher_type, jea.advance_voucher_no)
 		.where((jea.reference_type == ref_type) & (jea.reference_name == ref_no) & (jea.docstatus.lt(2)))
-		.run(as_list=1)
 	)
-	linked_jv = convert_to_list(linked_jv)
 	# remove reference only from specified payment
-	linked_jv = [x for x in linked_jv if x == payment_name] if payment_name else linked_jv
+	if payment_name:
+		query = query.where(jea.parent == payment_name)
 
-	if linked_jv:
-		update_query = (
-			qb.update(jea)
-			.set(jea.reference_type, None)
-			.set(jea.reference_name, None)
-			.set(jea.advance_voucher_type, None)
-			.set(jea.advance_voucher_no, None)
-			.set(jea.modified, now())
-			.set(jea.modified_by, frappe.session.user)
-			.where((jea.reference_type == ref_type) & (jea.reference_name == ref_no))
-		)
+	reference_rows = query.run(as_dict=True)
+	if not reference_rows:
+		return
 
-		if payment_name:
-			update_query = update_query.where(jea.parent == payment_name)
+	linked_jv = {row.parent for row in reference_rows}
+	advance_vouchers = {
+		(row.advance_voucher_type, row.advance_voucher_no)
+		for row in reference_rows
+		if row.advance_voucher_type and row.advance_voucher_no
+	}
 
-		update_query.run()
+	(
+		qb.update(jea)
+		.set(jea.reference_type, None)
+		.set(jea.reference_name, None)
+		.set(jea.advance_voucher_type, None)
+		.set(jea.advance_voucher_no, None)
+		.set(jea.modified, now())
+		.set(jea.modified_by, frappe.session.user)
+		.where(jea.name.isin([row.name for row in reference_rows]))
+		.run()
+	)
 
-		frappe.msgprint(_("Journal Entries {0} are un-linked").format("\n".join(linked_jv)))
+	if advance_vouchers:
+		for jv in linked_jv:
+			jv_doc = frappe.get_doc("Journal Entry", jv)
+			if jv_doc.docstatus == 1:
+				repost_advance_payment_ledger(jv_doc)
 
+		for voucher_type, voucher_no in advance_vouchers:
+			update_voucher_outstanding(voucher_type, voucher_no, None, None, None)
 
-def convert_to_list(result):
-	"""
-	Convert tuple to list
-	"""
-	return [x[0] for x in result]
+	frappe.msgprint(_("Journal Entries {0} are un-linked").format("\n".join(linked_jv)))
 
 
 def remove_ref_doc_link_from_pe(
