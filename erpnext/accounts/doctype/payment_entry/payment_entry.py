@@ -854,7 +854,7 @@ class PaymentEntry(AccountsController):
 							)
 						)
 
-					if ref_doc.doctype == "Purchase Invoice" and ref_doc.get("on_hold"):
+					if ref_doc.doctype == "Purchase Invoice" and ref_doc.invoice_is_blocked():
 						frappe.throw(
 							_("{0} {1} is on hold").format(_(d.reference_doctype), d.reference_name),
 							title=_("Invalid Purchase Invoice"),
