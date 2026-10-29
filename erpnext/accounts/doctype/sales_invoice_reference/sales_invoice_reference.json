@@ -65,8 +65,8 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount",
-   "reqd": 1,
-   "options": "currency"
+   "options": "currency",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,

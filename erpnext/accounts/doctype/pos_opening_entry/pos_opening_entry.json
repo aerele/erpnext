@@ -131,11 +131,11 @@
    "reqd": 1
   },
   {
+   "fetch_from": "pos_profile.currency",
    "fieldname": "currency",
    "fieldtype": "Link",
    "label": "Currency",
    "options": "Currency",
-   "fetch_from": "pos_profile.currency",
    "read_only": 1
   }
  ],
