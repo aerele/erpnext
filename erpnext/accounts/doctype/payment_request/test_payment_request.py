@@ -1246,6 +1246,29 @@ class TestPaymentRequest(ERPNextTestSuite):
 			pr.insert,
 		)
 
+	def test_resend_initiated_payment_request(self):
+		invoice = create_sales_invoice()
+		request = make_payment_request(
+			dt="Sales Invoice",
+			dn=invoice.name,
+			recipient_id="customer@example.com",
+			payment_gateway_account="_Test Gateway - INR - _TC",
+			mute_email=1,
+			submit_doc=1,
+			return_doc=1,
+		)
+		request.db_set("status", "Initiated")
+		request.resend_payment_email()
+		self.send_email.assert_called_once()
+		self.assertEqual(request.status, "Initiated")
+		self.assertEqual(request.outstanding_amount, request.grand_total)
+		self.assertFalse(frappe.db.exists("Payment Entry Reference", {"payment_request": request.name}))
+		for status in ("Paid", "Completed", "Cancelled"):
+			request.db_set("status", status)
+			with self.assertRaises(frappe.ValidationError):
+				request.resend_payment_email()
+		self.send_email.assert_called_once()
+
 	def test_resend_payment_email_uses_saved_values(self):
 		so = make_sales_order()
 		pr = make_payment_request(
