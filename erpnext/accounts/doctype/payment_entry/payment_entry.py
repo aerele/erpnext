@@ -939,14 +939,14 @@ class PaymentEntry(AccountsController):
 							)
 						)
 
-	def update_payment_schedule(self, cancel=0):
+	def update_payment_schedule(self, cancel=0, references=None):
 		if not cancel:
 			self.set_payment_term_discounts()
 
 		invoice_payment_amount_map = {}
 		invoice_paid_amount_map = {}
 
-		for ref in self.get("references"):
+		for ref in self.get("references") if references is None else references:
 			if not ref.payment_term or not ref.reference_name:
 				continue
 

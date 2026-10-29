@@ -1123,6 +1123,13 @@ def remove_ref_doc_link_from_pe(
 	# Update payment request amount
 	update_payment_requests_as_per_pe_references(reference_rows, cancel=True)
 
+	for payment in linked_pe:
+		payment_doc = frappe.get_doc("Payment Entry", payment)
+		if payment_doc.docstatus == 1:
+			payment_doc.update_payment_schedule(
+				cancel=1, references=[row for row in payment_doc.references if row.name in row_names]
+			)
+
 	# Update allocated amounts and modified fields in one go
 	(
 		qb.update(per)
