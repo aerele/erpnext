@@ -12,6 +12,11 @@ from frappe.model.workflow import get_workflow_name
 from frappe.utils import flt, get_link_to_form, getdate
 
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_accounting_dimensions
+from erpnext.accounts.doctype.pricing_rule.pricing_rule import (
+	get_pricing_rule_for_item,
+	set_transaction_type,
+	validate_pricing_context,
+)
 from erpnext.buying.utils import update_last_purchase_rate
 from erpnext.stock.doctype.item.item import validate_item_uoms
 from erpnext.stock.doctype.packed_item.packed_item import make_packing_list
@@ -19,6 +24,8 @@ from erpnext.stock.get_item_details import (
 	_get_bin_details,
 	get_conversion_factor,
 	get_item_warehouse_,
+	get_price_list_rate,
+	get_rate_locked_source_row,
 )
 from erpnext.stock.utils import (
 	is_group_warehouse,
@@ -125,10 +132,12 @@ class ChildItemUpdater:
 
 				child_item.qty = flt(d.get("qty"))
 				child_item.description = d.get("description")
+				update_child_item_uom_and_weight(child_item, d)
+				if not new_child_flag and d.get("uom") and not change_state.uom_unchanged:
+					self.update_item_price_for_uom(child_item, d, rate_unchanged)
 				update_child_item_rate_and_discount(
 					self.parent_doctype, child_item, d, self.allow_zero_qty, rate_unchanged=rate_unchanged
 				)
-				update_child_item_uom_and_weight(child_item, d)
 
 				if d.get("delivery_date") and self.parent_doctype == "Sales Order":
 					child_item.delivery_date = d.get("delivery_date")
@@ -171,6 +180,58 @@ class ChildItemUpdater:
 		from erpnext.selling.doctype.sales_order.services.delivery_schedule import DeliveryScheduleService
 
 		DeliveryScheduleService(self.parent).sync_schedule_with_item(child_item)
+
+	def update_item_price_for_uom(self, child_item, new_data, rate_unchanged):
+		if (
+			self.parent_doctype not in ("Sales Order", "Purchase Order")
+			or not rate_unchanged
+			or child_item.get("is_free_item")
+			or not child_item.qty
+		):
+			return
+
+		ctx = frappe._dict({**self.parent.as_dict(), **child_item.as_dict()})
+		ctx.update(
+			doctype=self.parent.doctype,
+			name=self.parent.name,
+			child_doctype=child_item.doctype,
+			child_docname=child_item.name,
+			stock_qty=child_item.qty * child_item.conversion_factor,
+			customer=self.parent.get("customer") if self.parent_doctype == "Sales Order" else None,
+			price_list=self.parent.get("selling_price_list") or self.parent.get("buying_price_list"),
+			price_list_rate=None,
+			rate=None,
+		)
+		validate_pricing_context(ctx)
+		set_transaction_type(ctx)
+		if get_rate_locked_source_row(ctx, self.parent):
+			return
+
+		item = frappe.get_cached_doc("Item", child_item.item_code)
+		item.check_permission()
+		item_details = get_price_list_rate(ctx, item)
+		ctx.update(item_details)
+		child_item.stock_qty = ctx.stock_qty
+		self.parent.get("items", {"name": child_item.name})[0].update(
+			{**child_item.as_dict(), **item_details}
+		)
+		item_details.update(get_pricing_rule_for_item(ctx, doc=self.parent))
+		if item_details.get("price_list_rate") is None:
+			return
+
+		for field in (
+			"price_list_rate",
+			"pricing_rules",
+			"discount_percentage",
+			"discount_amount",
+			"margin_type",
+			"margin_rate_or_amount",
+		):
+			if field in item_details:
+				child_item.set(field, item_details[field])
+
+		self.parent.set_item_rate_and_discounts(child_item, item_details)
+		new_data["rate"] = child_item.rate
 
 	def _post_update(
 		self,
