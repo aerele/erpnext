@@ -135,9 +135,15 @@ class POSInvoiceMergeLog(Document):
 	def on_cancel(self):
 		pos_invoice_docs = [frappe.get_cached_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
 
+		# A return segment can create credit notes against several earlier consolidated sales.
+		linked_invoices = frappe.get_all(
+			"POS Invoice",
+			filters={"name": ("in", [row.pos_invoice for row in self.pos_invoices])},
+			pluck="consolidated_invoice",
+		)
 		self.update_pos_invoices(pos_invoice_docs)
 		self.serial_and_batch_bundle_reference_for_pos_invoice()
-		self.cancel_linked_invoices()
+		self.cancel_linked_invoices(linked_invoices)
 		self.delink_serial_and_batch_bundle()
 
 	def process_merging_into_sales_invoice(self, data):
@@ -428,15 +434,19 @@ class POSInvoiceMergeLog(Document):
 
 		return []
 
-	def cancel_linked_invoices(self):
-		invoices = [self.consolidated_invoice, self.consolidated_credit_note]
+	def cancel_linked_invoices(self, linked_invoices=None):
+		invoices = set(linked_invoices or ()) | {self.consolidated_invoice, self.consolidated_credit_note}
+		invoices.discard(None)
+		invoices.discard("")
 		if not invoices:
 			return
 
-		invoices.reverse()
-		for si_name in invoices:
-			if not si_name:
-				continue
+		for si_name in frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ("in", list(invoices))},
+			pluck="name",
+			order_by="is_return desc, posting_date desc, posting_time desc, creation desc",
+		):
 			si = frappe.get_doc("Sales Invoice", si_name)
 			si.flags.ignore_validate = True
 			si.cancel()
@@ -552,7 +562,7 @@ def unconsolidate_pos_invoices(closing_entry):
 
 
 def get_merge_groups(invoice_by_customer):
-	"""Keep stock movements chronological when a closing includes refunds."""
+	"""Group customers within each sale/return segment without moving sales across refunds."""
 	groups = [
 		(customer, dimension, invoices)
 		for customer, dimensions in invoice_by_customer.items()
@@ -573,19 +583,18 @@ def get_merge_groups(invoice_by_customer):
 		order_by="posting_date, posting_time, creation, name",
 	)
 	batches = []
-	previous_key = None
+	segment = {}
+	previous_is_return = None
 	for name in ordered_names:
 		customer, dimension, invoice = by_name[name]
-		key = (
-			customer,
-			dimension,
-			bool(invoice.is_return),
-			invoice.return_against if invoice.is_return else None,
-		)
-		if key != previous_key:
-			batches.append((customer, []))
-			previous_key = key
-		batches[-1][1].append(invoice)
+		is_return = bool(invoice.is_return)
+		if previous_is_return is not None and is_return != previous_is_return:
+			batches.extend(segment.values())
+			segment = {}
+		key = (customer, dimension)
+		segment.setdefault(key, (customer, []))[1].append(invoice)
+		previous_is_return = is_return
+	batches.extend(segment.values())
 	return batches
 
 

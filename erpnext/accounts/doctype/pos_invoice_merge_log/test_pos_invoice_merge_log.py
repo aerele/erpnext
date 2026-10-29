@@ -48,9 +48,9 @@ def perpetual_inventory(company):
 		frappe.local.enable_perpetual_inventory[company] = previous
 
 
-def sell_over_the_counter(lines, discount_percentage=0):
+def sell_over_the_counter(lines, discount_percentage=0, customer=None):
 	item_code, qty, rate = lines[0]
-	sale = create_pos_invoice(item_code=item_code, qty=qty, rate=rate, do_not_save=True)
+	sale = create_pos_invoice(item_code=item_code, qty=qty, rate=rate, customer=customer, do_not_save=True)
 	for item_code, qty, rate in lines[1:]:
 		sale.append(
 			"items",
@@ -144,6 +144,70 @@ class TestPOSInvoiceMergeLog(ERPNextTestSuite):
 			),
 			2,
 		)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"allow_negative_stock": 0})
+	def test_alternating_customers_are_grouped_between_refunds(self):
+		from erpnext.stock.doctype.item.test_item import make_item
+
+		item = make_item("_Test POS Alternating Customers", {"is_stock_item": 1})
+		make_stock_entry(item_code=item.name, target="_Test Warehouse - _TC", qty=8, basic_rate=10)
+		customers = ("_Test Customer", "_Test Customer 2", "_Test Customer", "_Test Customer 2")
+		before = [sell_over_the_counter([(item.name, 1, 100)], customer=customer) for customer in customers]
+		returned = refund_over_the_counter(before[0])
+		after = [sell_over_the_counter([(item.name, 1, 100)], customer=customer) for customer in customers]
+		closing = self.make_closing_entry()
+		for invoice in [*before, returned, *after]:
+			invoice.reload()
+		for segment in (before, after):
+			self.assertEqual(segment[0].consolidated_invoice, segment[2].consolidated_invoice)
+			self.assertEqual(segment[1].consolidated_invoice, segment[3].consolidated_invoice)
+		self.assertEqual(len({invoice.consolidated_invoice for invoice in [*before, *after]}), 4)
+		self.assertEqual(frappe.db.count("POS Invoice Merge Log", {"pos_closing_entry": closing.name}), 5)
+		closing.cancel()
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": "_Test Warehouse - _TC"}, "actual_qty"
+			),
+			8,
+		)
+
+	def test_consecutive_returns_share_their_consolidated_original(self):
+		first = sell_over_the_counter([("_Test Non Stock Item", 1, 100)])
+		second = sell_over_the_counter([("_Test Non Stock Item", 1, 100)])
+		self.make_closing_entry()
+		self.assertEqual(first.reload().status, "Consolidated")
+		self.assertEqual(first.consolidated_invoice, second.reload().consolidated_invoice)
+
+		self.opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		returns = [refund_over_the_counter(invoice) for invoice in (first, second)]
+		closing = self.make_closing_entry()
+		credit_notes = {invoice.reload().consolidated_invoice for invoice in returns}
+		self.assertEqual(len(credit_notes), 1)
+		self.assertEqual(frappe.db.count("POS Invoice Merge Log", {"pos_closing_entry": closing.name}), 1)
+		closing.cancel()
+		self.assertEqual(frappe.db.get_value("Sales Invoice", credit_notes.pop(), "docstatus"), 2)
+		self.assertEqual(frappe.db.get_value("Sales Invoice", first.consolidated_invoice, "docstatus"), 1)
+
+	def test_return_segment_cancels_all_credit_notes_for_earlier_closings(self):
+		first = sell_over_the_counter([("_Test Non Stock Item", 2, 100)])
+		refund_over_the_counter(first, qty=-1)
+		second = sell_over_the_counter([("_Test Non Stock Item", 1, 100)])
+		self.make_closing_entry()
+		self.assertEqual(first.reload().status, "Consolidated")
+		self.assertEqual(second.reload().status, "Consolidated")
+		self.assertNotEqual(first.consolidated_invoice, second.consolidated_invoice)
+
+		self.opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		returns = [refund_over_the_counter(first, qty=-1), refund_over_the_counter(second)]
+		closing = self.make_closing_entry()
+		credit_notes = {invoice.reload().consolidated_invoice for invoice in returns}
+		self.assertEqual(len(credit_notes), 2)
+		self.assertEqual(frappe.db.count("POS Invoice Merge Log", {"pos_closing_entry": closing.name}), 1)
+		closing.cancel()
+		for name in credit_notes:
+			self.assertEqual(frappe.db.get_value("Sales Invoice", name, "docstatus"), 2)
+		for invoice in returns:
+			self.assertFalse(invoice.reload().consolidated_invoice)
 
 	def test_consolidated_invoice_creation(self):
 		pos_inv = create_pos_invoice(rate=300, do_not_submit=1)
