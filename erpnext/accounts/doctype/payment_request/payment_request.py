@@ -562,11 +562,12 @@ class PaymentRequest(Document):
 		if (
 			self.docstatus != 1
 			or self.payment_request_type != "Inward"
-			or self.status in ("Paid", "Completed", "Cancelled")
+			or self.status in ("Paid", "Cancelled")
 			or not flt(self.outstanding_amount)
 		):
 			return
 
+		# No custom redirect: gateways keep their default success page.
 		self.set_as_paid()
 
 	def set_as_paid(self):

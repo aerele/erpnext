@@ -139,6 +139,24 @@ class TestPaymentRequest(ERPNextTestSuite):
 					1,
 				)
 
+	def test_phone_gateway_callback_marks_request_paid_without_redirect(self):
+		invoice = create_sales_invoice()
+		request = make_payment_request(
+			dt="Sales Invoice",
+			dn=invoice.name,
+			mute_email=1,
+			payment_gateway_account="_Test Gateway - INR - _TC",
+			submit_doc=1,
+			return_doc=1,
+		)
+		request.db_set("payment_channel", "Phone")
+		stale_request = frappe.get_doc("Payment Request", request.name)
+		self.assertIsNone(request.on_payment_authorized("Completed"))
+		self.assertEqual(request.reload().status, "Paid")
+		self.assertEqual(request.outstanding_amount, 0)
+		self.assertIsNone(stale_request.on_payment_authorized("Completed"))
+		self.assertFalse(frappe.db.exists("Payment Entry Reference", {"payment_request": request.name}))
+
 	def test_payment_request_linkings(self):
 		so_inr = make_sales_order(currency="INR", do_not_save=True)
 		so_inr.disable_rounded_total = 1
