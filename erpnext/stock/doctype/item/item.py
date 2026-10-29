@@ -242,6 +242,7 @@ class Item(Document):
 		if self.is_new():
 			self.validate_opening_stock()
 		self.validate_shelf_life()
+		self.validate_max_discount()
 		self.check_for_active_boms()
 		self.fill_customer_code()
 		self.check_item_tax()
@@ -467,6 +468,12 @@ class Item(Document):
 				_("{0} must be greater than zero.").format(
 					self.get_label_from_fieldname("shelf_life_in_days")
 				)
+			)
+
+	def validate_max_discount(self):
+		if not 0 <= flt(self.max_discount) <= 100:
+			frappe.throw(
+				_("{0} must be between 0 and 100.").format(self.get_label_from_fieldname("max_discount"))
 			)
 
 	def clear_retain_sample(self):
