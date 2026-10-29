@@ -200,8 +200,10 @@ class ShippingRule(Document):
 				)
 
 		if existing_shipping_charge:
-			if existing_shipping_charge[-1].shipping_rule == self.name and not self.cost_center:
-				shipping_charge.pop("cost_center")
+			if existing_shipping_charge[-1].shipping_rule == self.name:
+				shipping_charge.pop("description")
+				if not self.cost_center:
+					shipping_charge.pop("cost_center")
 			existing_shipping_charge[-1].update(shipping_charge)
 		else:
 			doc.append("taxes", shipping_charge)

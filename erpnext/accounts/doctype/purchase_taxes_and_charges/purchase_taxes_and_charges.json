@@ -300,8 +300,8 @@
    "hidden": 1,
    "label": "Shipping Rule",
    "options": "Shipping Rule",
-   "read_only": 1,
-   "print_hide": 1
+   "print_hide": 1,
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,

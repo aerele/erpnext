@@ -48,6 +48,9 @@ class TestShippingRule(ERPNextTestSuite):
 				)
 				first.add_shipping_rule_to_tax_table(doc, 100)
 				shipping = doc.taxes[-1]
+				shipping.description = "Delivery instructions"
+				first.add_shipping_rule_to_tax_table(doc, 100)
+				self.assertEqual(shipping.description, "Delivery instructions")
 				dependent = doc.append("taxes", {"charge_type": "On Previous Row Amount", "row_id": "2"})
 				doc.shipping_rule = second.name
 				second.add_shipping_rule_to_tax_table(doc, 250)
@@ -58,6 +61,7 @@ class TestShippingRule(ERPNextTestSuite):
 				self.assertEqual(shipping.account_head, second.account)
 				self.assertEqual(shipping.tax_amount, 250)
 				self.assertEqual(shipping.shipping_rule, second.name)
+				self.assertEqual(shipping.description, second.label)
 				self.assertEqual(dependent.row_id, "2")
 
 	def test_switch_saved_legacy_shipping_charge(self):
@@ -80,6 +84,10 @@ class TestShippingRule(ERPNextTestSuite):
 		self.assertEqual(order.taxes[0].name, charge_name)
 		self.assertEqual(order.taxes[0].account_head, second.account)
 		self.assertEqual(order.taxes[0].shipping_rule, second.name)
+		order.taxes[0].description = "Deliver to the loading dock"
+		order.save()
+		order.reload()
+		self.assertEqual(order.taxes[0].description, "Deliver to the loading dock")
 
 	def test_account_company_on_update(self):
 		shipping_rule = create_shipping_rule("Selling", "Standard Delivery")
