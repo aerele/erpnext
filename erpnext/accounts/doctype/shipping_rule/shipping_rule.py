@@ -174,20 +174,36 @@ class ShippingRule(Document):
 			)
 			shipping_charge["add_deduct_tax"] = "Add"
 
-		shipping_charge_filters = shipping_charge.copy()
-		if not self.cost_center:
-			shipping_charge_filters["cost_center"] = (
-				"in",
-				(None, "", erpnext.get_default_cost_center(doc.company)),
-			)
+		shipping_charge.update(shipping_rule=self.name, description=self.label, tax_amount=shipping_amount)
+		existing_shipping_charge = doc.get("taxes", {"shipping_rule": ("is", "set")})
+		if not existing_shipping_charge:
+			previous = doc.get_doc_before_save()
+			previous_rule = previous.get("shipping_rule") if previous else None
+			if not previous_rule and not doc.is_new():
+				previous_rule = frappe.db.get_value(doc.doctype, doc.name, "shipping_rule")
+			previous_rule = previous_rule or doc.get("shipping_rule")
+			if previous_rule:
+				rule = frappe.get_cached_doc("Shipping Rule", previous_rule)
+				existing_shipping_charge = doc.get(
+					"taxes",
+					{
+						"charge_type": "Actual",
+						"account_head": rule.account,
+						"description": rule.label,
+						"cost_center": (
+							"in",
+							(rule.cost_center,)
+							if rule.cost_center
+							else (None, "", erpnext.get_default_cost_center(doc.company)),
+						),
+					},
+				)
 
-		existing_shipping_charge = doc.get("taxes", filters=shipping_charge_filters)
 		if existing_shipping_charge:
-			# take the last record found
-			existing_shipping_charge[-1].tax_amount = shipping_amount
+			if existing_shipping_charge[-1].shipping_rule == self.name and not self.cost_center:
+				shipping_charge.pop("cost_center")
+			existing_shipping_charge[-1].update(shipping_charge)
 		else:
-			shipping_charge["tax_amount"] = shipping_amount
-			shipping_charge["description"] = self.label
 			doc.append("taxes", shipping_charge)
 
 	def sort_shipping_rule_conditions(self):

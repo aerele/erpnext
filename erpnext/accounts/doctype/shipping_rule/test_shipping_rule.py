@@ -26,6 +26,61 @@ class TestShippingRule(ERPNextTestSuite):
 				with self.assertRaisesRegex(frappe.ValidationError, "does not belong to Company"):
 					shipping_rule.insert()
 
+	def test_switch_rule_preserves_manual_charges_and_tax_row_references(self):
+		for doctype, rule_type in (("Quotation", "Selling"), ("Purchase Order", "Buying")):
+			with self.subTest(doctype=doctype):
+				first = create_shipping_rule(rule_type, f"_Test First {rule_type} Shipping")
+				second = create_shipping_rule(rule_type, f"_Test Second {rule_type} Shipping")
+				second.account = "_Test Account Service Tax - _TC"
+				second.save()
+				doc = frappe.new_doc(doctype)
+				doc.company = first.company
+				doc.shipping_rule = first.name
+				manual = doc.append(
+					"taxes",
+					{
+						"charge_type": "Actual",
+						"account_head": first.account,
+						"description": "Manual handling",
+						"tax_amount": 25,
+						"cost_center": first.cost_center,
+					},
+				)
+				first.add_shipping_rule_to_tax_table(doc, 100)
+				shipping = doc.taxes[-1]
+				dependent = doc.append("taxes", {"charge_type": "On Previous Row Amount", "row_id": "2"})
+				doc.shipping_rule = second.name
+				second.add_shipping_rule_to_tax_table(doc, 250)
+				second.add_shipping_rule_to_tax_table(doc, 250)
+				self.assertEqual(len(doc.taxes), 3)
+				self.assertEqual(manual.tax_amount, 25)
+				self.assertIs(doc.taxes[1], shipping)
+				self.assertEqual(shipping.account_head, second.account)
+				self.assertEqual(shipping.tax_amount, 250)
+				self.assertEqual(shipping.shipping_rule, second.name)
+				self.assertEqual(dependent.row_id, "2")
+
+	def test_switch_saved_legacy_shipping_charge(self):
+		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+
+		first = create_shipping_rule("Selling", "_Test Legacy Shipping")
+		second = create_shipping_rule("Selling", "_Test Replacement Shipping")
+		second.account = "_Test Account Service Tax - _TC"
+		second.save()
+		order = make_sales_order(do_not_save=True)
+		order.shipping_rule = first.name
+		order.save()
+		charge_name = order.taxes[-1].name
+		frappe.db.set_value("Sales Taxes and Charges", charge_name, "shipping_rule", None)
+		order.reload()
+		order.shipping_rule = second.name
+		order.save()
+		order.reload()
+		self.assertEqual(len(order.taxes), 1)
+		self.assertEqual(order.taxes[0].name, charge_name)
+		self.assertEqual(order.taxes[0].account_head, second.account)
+		self.assertEqual(order.taxes[0].shipping_rule, second.name)
+
 	def test_account_company_on_update(self):
 		shipping_rule = create_shipping_rule("Selling", "Standard Delivery")
 		shipping_rule.company = "_Test Company 1"

@@ -32,7 +32,8 @@
   "base_tax_amount",
   "base_total",
   "base_tax_amount_after_discount_amount",
-  "dont_recompute_tax"
+  "dont_recompute_tax",
+  "shipping_rule"
  ],
  "fields": [
   {
@@ -249,6 +250,15 @@
    "fieldtype": "Check",
    "label": "Is Tax Withholding Account",
    "read_only": 1
+  },
+  {
+   "fieldname": "shipping_rule",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Shipping Rule",
+   "options": "Shipping Rule",
+   "read_only": 1,
+   "print_hide": 1
   }
  ],
  "idx": 1,

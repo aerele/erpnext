@@ -45,6 +45,7 @@ class PurchaseTaxesandCharges(Document):
 		rate: DF.Float
 		row_id: DF.Data | None
 		set_by_item_tax_template: DF.Check
+		shipping_rule: DF.Link | None
 		tax_amount: DF.Currency
 		tax_amount_after_discount_amount: DF.Currency
 		total: DF.Currency
