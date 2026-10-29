@@ -2,6 +2,8 @@
 # See license.txt
 
 
+from unittest.mock import patch
+
 import frappe
 from frappe import qb
 from frappe.utils import add_days, flt, nowdate
@@ -9,6 +11,7 @@ from frappe.utils import add_days, flt, nowdate
 from erpnext.accounts.doctype.account.test_account import create_account
 from erpnext.accounts.doctype.journal_entry.test_journal_entry import make_journal_entry
 from erpnext.accounts.doctype.payment_entry.payment_entry import (
+	get_company_defaults,
 	get_outstanding_reference_documents,
 	get_party_details,
 	get_payment_entry,
@@ -25,11 +28,387 @@ from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import (
 )
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
 from erpnext.setup.doctype.employee.test_employee import make_employee
-from erpnext.tests.permission_test_utils import make_bank_account
+from erpnext.tests.permission_test_utils import as_user, make_bank_account, make_fenced_user
 from erpnext.tests.utils import ERPNextTestSuite
 
 
 class TestPaymentEntry(ERPNextTestSuite):
+	def test_journal_reference_uses_booked_exchange_rate(self):
+		journal = frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"company": "_Test Company",
+				"posting_date": nowdate(),
+				"multi_currency": 1,
+				"accounts": [
+					{
+						"account": "_Test Receivable USD - _TC",
+						"party_type": "Customer",
+						"party": "_Test Customer USD",
+						"debit_in_account_currency": amount,
+						"exchange_rate": rate,
+					}
+					for amount, rate in ((40, 80), (60, 85))
+				]
+				+ [{"account": "Sales - _TC", "credit_in_account_currency": 8300}],
+			}
+		).submit()
+		details = get_reference_details(
+			journal.doctype, journal.name, "USD", "Customer", "_Test Customer USD"
+		)
+		self.assertEqual(details.exchange_rate, 83)
+		outstanding = get_outstanding_reference_documents(
+			{
+				"company": journal.company,
+				"party_type": "Customer",
+				"party": "_Test Customer USD",
+				"party_account": "_Test Receivable USD - _TC",
+				"vouchers": [frappe._dict(voucher_type=journal.doctype, voucher_no=journal.name)],
+			}
+		)
+		self.assertEqual(outstanding[0].exchange_rate, 83)
+		payment = create_payment_entry(
+			payment_type="Receive",
+			party_type="Customer",
+			party="_Test Customer USD",
+			paid_from="_Test Receivable USD - _TC",
+			paid_to="_Test Bank - _TC",
+			paid_amount=100,
+		)
+		payment.source_exchange_rate = 83
+		payment.received_amount = 8300
+		payment.append(
+			"references",
+			{"reference_doctype": journal.doctype, "reference_name": journal.name, "allocated_amount": 100},
+		)
+		payment.submit()
+		self.assertEqual(payment.references[0].exchange_gain_loss, 0)
+		self.assertFalse(self.get_journals_for(payment.doctype, payment.name))
+		payment.cancel()
+
+	def test_draft_reference_refreshes_client_exchange_gain_loss(self):
+		invoice = create_sales_invoice(
+			customer="_Test Customer USD",
+			debit_to="_Test Receivable USD - _TC",
+			currency="USD",
+			conversion_rate=80,
+			qty=1,
+			rate=100,
+		)
+		payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		payment.source_exchange_rate = 80
+		payment.received_amount = 8000
+		payment.references[0].exchange_rate = 70
+		payment.references[0].exchange_gain_loss = 1
+		payment.submit()
+		self.assertEqual(payment.references[0].exchange_rate, 80)
+		self.assertEqual(payment.references[0].exchange_gain_loss, 0)
+		self.assertFalse(self.get_journals_for(payment.doctype, payment.name))
+		self.assertEqual(invoice.reload().outstanding_amount, 0)
+		payment.cancel()
+		self.assertEqual(invoice.reload().outstanding_amount, 100)
+
+	def test_payment_request_must_match_reference(self):
+		invoice = create_sales_invoice(qty=1, rate=100)
+		other_invoice = create_sales_invoice(qty=1, rate=100)
+		request = make_payment_request(
+			dt=other_invoice.doctype, dn=other_invoice.name, submit_doc=True, return_doc=True, mute_email=True
+		)
+		payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		payment.references[0].payment_request = request.name
+		with self.assertRaisesRegex(frappe.ValidationError, "Payment Request.*reference"):
+			payment.insert()
+		self.assertEqual(request.reload().outstanding_amount, 100)
+		self.assertEqual(other_invoice.reload().outstanding_amount, 100)
+
+	def test_purchase_discount_with_foreign_bank(self):
+		create_payment_terms_template_with_discount()
+		frappe.db.set_value("Company", "_Test Company", "default_discount_account", "Write Off - _TC")
+		for bank, expected_paid in (("_Test Bank USD - _TC", 90), ("_Test Bank - _TC", 7200)):
+			with self.subTest(bank=bank):
+				invoice = make_purchase_invoice(
+					supplier="_Test Supplier USD",
+					credit_to="_Test Payable USD - _TC",
+					currency="USD",
+					conversion_rate=80,
+					qty=1,
+					rate=100,
+					do_not_save=True,
+				)
+				invoice.payment_terms_template = "Test Discount Template"
+				invoice.submit()
+				payment = get_payment_entry(
+					invoice.doctype, invoice.name, bank_account=bank, bank_amount=8000
+				)
+				self.assertEqual(payment.paid_amount, expected_paid)
+				self.assertEqual(payment.received_amount, 90)
+				payment.source_exchange_rate = 80 if bank == "_Test Bank USD - _TC" else 1
+				payment.target_exchange_rate = 80
+				payment.set_amounts()
+				self.assertEqual(sum(row.amount for row in payment.deductions), -800)
+				payment.reference_no = invoice.name
+				payment.submit()
+				self.assertEqual(invoice.reload().outstanding_amount, 0)
+				payment.cancel()
+				self.assertEqual(invoice.reload().outstanding_amount, 100)
+
+	def test_foreign_bank_amounts_after_tax(self):
+		payment = create_payment_entry(
+			payment_type="Receive",
+			party_type="Customer",
+			party="_Test Customer",
+			paid_from="Debtors - _TC",
+			paid_to="_Test Bank USD - _TC",
+			paid_amount=8000,
+		)
+		payment.target_exchange_rate = 80
+		payment.received_amount = 100
+		payment.append(
+			"taxes",
+			{
+				"account_head": "_Test Account Service Tax - _TC",
+				"charge_type": "On Paid Amount",
+				"rate": 10,
+				"add_deduct_tax": "Add",
+				"description": "Service Tax",
+			},
+		)
+		payment.submit()
+		self.assertEqual(payment.paid_amount_after_tax, 8800)
+		self.assertEqual(payment.received_amount_after_tax, 110)
+		self.assertEqual(payment.base_received_amount_after_tax, 8800)
+		self.assertEqual(
+			sum(
+				frappe.get_all(
+					"GL Entry",
+					filters={"voucher_no": payment.name, "account": payment.paid_to},
+					pluck="debit_in_account_currency",
+				)
+			),
+			110,
+		)
+		payment.cancel()
+
+	def test_purchase_invoice_hold_release_dates(self):
+		for release_date, blocked in (
+			(None, True),
+			(add_days(nowdate(), 1), True),
+			(nowdate(), False),
+			(add_days(nowdate(), -1), False),
+		):
+			with self.subTest(release_date=release_date):
+				invoice = make_purchase_invoice()
+				payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+				with patch(
+					"erpnext.accounts.doctype.purchase_invoice.purchase_invoice.nowdate",
+					return_value=add_days(nowdate(), -2),
+				):
+					invoice.block_invoice(release_date=release_date)
+				outstanding = get_outstanding_reference_documents(
+					{
+						"company": invoice.company,
+						"party_type": "Supplier",
+						"party": invoice.supplier,
+						"party_account": invoice.credit_to,
+						"vouchers": [frappe._dict(voucher_type=invoice.doctype, voucher_no=invoice.name)],
+					}
+				)
+				self.assertEqual(bool(outstanding), not blocked)
+				if blocked:
+					with self.assertRaisesRegex(frappe.ValidationError, "is on hold"):
+						payment.insert()
+				else:
+					payment.submit()
+					self.assertEqual(invoice.reload().outstanding_amount, 0)
+					payment.cancel()
+
+	def test_foreign_unallocated_amount_precision(self):
+		invoice = create_sales_invoice(
+			customer="_Test Customer USD",
+			debit_to="_Test Receivable USD - _TC",
+			currency="USD",
+			conversion_rate=83.33,
+			qty=1,
+			rate=100,
+		)
+		payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		payment.references[0].allocated_amount = 33.33
+		payment.submit()
+		self.assertEqual(payment.unallocated_amount, 66.67)
+		payment.reload()
+		self.assertEqual(payment.unallocated_amount, 66.67)
+		self.assertEqual(invoice.reload().outstanding_amount, 66.67)
+		payment.cancel()
+
+	def test_outstanding_references_require_payment_access(self):
+		invoice = create_sales_invoice(qty=1, rate=100)
+		other_invoice = create_sales_invoice(qty=1, rate=200)
+		args = {
+			"company": invoice.company,
+			"party_type": "Customer",
+			"party": invoice.customer,
+			"party_account": invoice.debit_to,
+		}
+		user = make_fenced_user("payment-stock-user@example.com", ["Stock User"])
+		with as_user(user):
+			self.assertTrue(frappe.has_permission("Customer", "read", invoice.customer))
+			with self.assertRaises(frappe.PermissionError):
+				get_outstanding_reference_documents(args)
+		user = make_fenced_user(
+			"payment-accounts-user@example.com", ["Accounts User"], [("Company", invoice.company)]
+		)
+		with as_user(user):
+			self.assertIn(invoice.name, [row.voucher_no for row in get_outstanding_reference_documents(args)])
+			with self.assertRaises(frappe.PermissionError):
+				get_outstanding_reference_documents(dict(args, company="_Test Company 2"))
+		user = make_fenced_user(
+			"payment-accounts-user@example.com",
+			["Accounts User"],
+			[("Company", invoice.company), ("Sales Invoice", invoice.name)],
+		)
+		with as_user(user):
+			self.assertFalse(frappe.has_permission("Sales Invoice", "read", other_invoice.name))
+			self.assertEqual(
+				[row.voucher_no for row in get_outstanding_reference_documents(args)], [invoice.name]
+			)
+
+	def test_company_defaults_require_payment_access(self):
+		user = make_fenced_user("payment-defaults-stock-user@example.com", ["Stock User"])
+		with as_user(user):
+			with self.assertRaises(frappe.PermissionError):
+				get_company_defaults("_Test Company")
+		user = make_fenced_user(
+			"payment-defaults-accounts-user@example.com", ["Accounts User"], [("Company", "_Test Company")]
+		)
+		with as_user(user):
+			self.assertEqual(get_company_defaults("_Test Company").cost_center, "Main - _TC")
+			with self.assertRaises(frappe.PermissionError):
+				get_company_defaults("_Test Company 2")
+
+	def test_payment_schedule_records_only_applied_discounts(self):
+		create_payment_terms_template_with_discount()
+		frappe.db.set_value("Company", "_Test Company", "default_discount_account", "Write Off - _TC")
+		for expired in (True, False):
+			with self.subTest(expired=expired):
+				invoice = create_sales_invoice(qty=1, rate=1000, do_not_save=True)
+				invoice.payment_terms_template = "Test Discount Template"
+				invoice.submit()
+				payment = get_payment_entry(
+					invoice.doctype,
+					invoice.name,
+					bank_account="_Test Cash - _TC",
+					reference_date=add_days(nowdate(), 2) if expired else nowdate(),
+				)
+				payment.references[0].allocated_amount = 500
+				payment.paid_amount = payment.received_amount = 500 if expired else 400
+				payment.submit()
+				invoice.reload()
+				self.assertEqual(invoice.payment_schedule[0].paid_amount, payment.paid_amount)
+				self.assertEqual(invoice.payment_schedule[0].discounted_amount, 0 if expired else 100)
+				self.assertEqual(invoice.payment_schedule[0].outstanding, 500)
+				remaining = get_payment_entry(
+					invoice.doctype,
+					invoice.name,
+					bank_account="_Test Cash - _TC",
+					reference_date=payment.reference_date,
+				)
+				self.assertEqual(remaining.references[0].allocated_amount, 500)
+				self.assertEqual(remaining.paid_amount, 500)
+				remaining.submit()
+				self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 1000 if expired else 900)
+				self.assertEqual(invoice.payment_schedule[0].discounted_amount, 0 if expired else 100)
+				payment.cancel()
+				self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 500)
+				self.assertEqual(invoice.payment_schedule[0].discounted_amount, 0)
+				remaining.cancel()
+				self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 0)
+				self.assertEqual(invoice.payment_schedule[0].outstanding, 1000)
+				self.assertEqual(invoice.payment_schedule[0].base_outstanding, 1000)
+
+		invoice = create_sales_invoice(qty=1, rate=1000, do_not_save=True)
+		invoice.payment_terms_template = "Test Discount Template"
+		invoice.submit()
+		request = make_payment_request(
+			dt=invoice.doctype, dn=invoice.name, submit_doc=True, return_doc=True, mute_email=True
+		)
+		payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		payment.references[0].allocated_amount = 1
+		payment.append("references", frappe.copy_doc(payment.references[0]))
+		payment.references[1].payment_request = None
+		payment.references[1].allocated_amount = 999
+		payment.submit()
+		self.assertEqual([row.payment_term_discount for row in payment.references], [1, 99])
+		self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 900)
+		payment.cancel()
+		self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 0)
+		self.assertEqual(request.reload().outstanding_amount, 1000)
+
+	def test_unreconcile_restores_payment_schedule(self):
+		create_payment_terms_template()
+		invoice = create_sales_invoice(qty=1, rate=118, do_not_save=True)
+		invoice.payment_terms_template = "Test Receivable Template"
+		invoice.submit()
+		payment = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		payment.submit()
+		unreconcile = frappe.get_doc(
+			{
+				"doctype": "Unreconcile Payment",
+				"company": payment.company,
+				"voucher_type": payment.doctype,
+				"voucher_no": payment.name,
+			}
+		)
+		unreconcile.add_references()
+		unreconcile.submit()
+		invoice.reload()
+		self.assertEqual(invoice.outstanding_amount, 118)
+		self.assertEqual(sum(row.paid_amount for row in invoice.payment_schedule), 0)
+		self.assertEqual(sum(row.outstanding for row in invoice.payment_schedule), 118)
+		remaining = get_payment_entry(invoice.doctype, invoice.name, bank_account="_Test Cash - _TC")
+		self.assertEqual(sum(row.allocated_amount for row in remaining.references), 118)
+		remaining.submit()
+		self.assertEqual(invoice.reload().outstanding_amount, 0)
+		payment.reload().cancel()
+		self.assertEqual(sum(row.paid_amount for row in invoice.reload().payment_schedule), 118)
+		remaining.cancel()
+		self.assertEqual(sum(row.paid_amount for row in invoice.reload().payment_schedule), 0)
+
+		create_payment_terms_template_with_discount()
+		frappe.db.set_value("Company", "_Test Company", "default_discount_account", "Write Off - _TC")
+		invoices = []
+		for rate in (1000, 2000):
+			invoice = create_sales_invoice(qty=1, rate=rate, do_not_save=True)
+			invoice.payment_terms_template = "Test Discount Template"
+			invoices.append(invoice.submit())
+		payment = get_payment_entry(invoices[0].doctype, invoices[0].name, bank_account="_Test Cash - _TC")
+		other_payment = get_payment_entry(
+			invoices[1].doctype, invoices[1].name, bank_account="_Test Cash - _TC"
+		)
+		payment.append("references", frappe.copy_doc(other_payment.references[0]))
+		payment.deductions[0].amount += other_payment.deductions[0].amount
+		payment.paid_amount = payment.received_amount = 2700
+		payment.submit()
+		unreconcile = frappe.get_doc(
+			{
+				"doctype": "Unreconcile Payment",
+				"company": payment.company,
+				"voucher_type": payment.doctype,
+				"voucher_no": payment.name,
+			}
+		)
+		unreconcile.add_references()
+		unreconcile.set(
+			"allocations", [row for row in unreconcile.allocations if row.reference_name == invoices[0].name]
+		)
+		unreconcile.submit()
+		self.assertEqual(invoices[0].reload().payment_schedule[0].discounted_amount, 0)
+		self.assertEqual(invoices[1].reload().payment_schedule[0].discounted_amount, 200)
+		payment.reload().cancel()
+		for invoice in invoices:
+			self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 0)
+			self.assertEqual(invoice.payment_schedule[0].discounted_amount, 0)
+			self.assertEqual(invoice.payment_schedule[0].outstanding, invoice.grand_total)
+
 	def test_payment_creation_excludes_disabled_bank_default(self):
 		bank_account = frappe.get_doc(
 			"Bank Account", make_bank_account("_Test Payment Bank Default", "_Test Company", "HDFC - _TC")
