@@ -469,6 +469,28 @@ class PaymentEntry(AccountsController):
 			return
 
 		for ref in self.references:
+			if ref.payment_request:
+				request = frappe.db.get_value(
+					"Payment Request",
+					ref.payment_request,
+					["docstatus", "reference_doctype", "reference_name", "party_type", "party"],
+					as_dict=True,
+				)
+				if (
+					request.docstatus != 1
+					or request.reference_doctype != ref.reference_doctype
+					or request.reference_name != ref.reference_name
+					or (
+						request.party
+						and (request.party != self.party or request.party_type != self.party_type)
+					)
+				):
+					frappe.throw(
+						_(
+							"Row #{0}: Payment Request {1} does not match the payment reference and party."
+						).format(ref.idx, ref.payment_request)
+					)
+
 			if ref.payment_request and ref.allocated_amount > pr_outstanding_amounts[ref.payment_request]:
 				frappe.throw(
 					msg=_(
