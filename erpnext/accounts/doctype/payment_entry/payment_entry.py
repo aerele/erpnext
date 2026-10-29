@@ -697,7 +697,7 @@ class PaymentEntry(AccountsController):
 				ref_details.update({"exchange_rate": reference_exchange_details.exchange_rate})
 
 			for field, value in ref_details.items():
-				if d.exchange_gain_loss:
+				if d.exchange_gain_loss and self.docstatus != 0 and self.get("_action") != "submit":
 					# for cases where gain/loss is booked into invoice
 					# exchange_gain_loss is calculated from invoice & populated
 					# and row.exchange_rate is already set to payment entry's exchange rate
