@@ -111,6 +111,40 @@ class TestPOSInvoiceMergeLog(ERPNextTestSuite):
 		closing_entry.insert().submit()
 		return closing_entry
 
+	@ERPNextTestSuite.change_settings("Stock Settings", {"allow_negative_stock": 0})
+	def test_return_stock_available_before_resale_on_closing(self):
+		from erpnext.stock.doctype.item.test_item import make_item
+
+		item = make_item("_Test POS Refund Resale", {"is_stock_item": 1})
+		make_stock_entry(item_code=item.name, target="_Test Warehouse - _TC", qty=2, basic_rate=10)
+		first = sell_over_the_counter([(item.name, 1, 100)])
+		second = sell_over_the_counter([(item.name, 1, 100)])
+		returned = refund_over_the_counter(first)
+		last = sell_over_the_counter([(item.name, 1, 100)])
+		closing = self.make_closing_entry()
+		self.assertEqual(len(frappe.get_doc(closing.doctype, closing.name).pos_invoices), 4)
+		for log in frappe.get_all(
+			"POS Invoice Merge Log", filters={"pos_closing_entry": closing.name}, pluck="name"
+		):
+			self.assertTrue(frappe.get_doc("POS Invoice Merge Log", log).pos_invoices)
+		for invoice in (first, second, returned, last):
+			self.assertTrue(invoice.reload().consolidated_invoice)
+		self.assertEqual(first.consolidated_invoice, second.consolidated_invoice)
+		self.assertNotEqual(first.consolidated_invoice, last.consolidated_invoice)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": "_Test Warehouse - _TC"}, "actual_qty"
+			),
+			0,
+		)
+		closing.cancel()
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": "_Test Warehouse - _TC"}, "actual_qty"
+			),
+			2,
+		)
+
 	def test_consolidated_invoice_creation(self):
 		pos_inv = create_pos_invoice(rate=300, do_not_submit=1)
 		pos_inv.append("payments", {"mode_of_payment": "Cash", "account": "Cash - _TC", "amount": 300})
