@@ -2138,6 +2138,8 @@ def validate_inclusive_tax(tax, doc):
 @frappe.whitelist()
 def get_outstanding_reference_documents(args: str | dict, validate: bool = False):
 	args = frappe.parse_json(args)
+	frappe.has_permission("Payment Entry", "read", throw=True)
+	frappe.has_permission("Company", "read", args.get("company"), throw=True)
 
 	if args.get("party_type") == "Member":
 		return
@@ -2234,6 +2236,9 @@ def get_outstanding_reference_documents(args: str | dict, validate: bool = False
 			vouchers=args.get("vouchers") or None,
 		)
 
+		outstanding_invoices = [
+			d for d in outstanding_invoices if frappe.has_permission(d.voucher_type, "read", d.voucher_no)
+		]
 		outstanding_invoices = split_refdocs_based_on_payment_terms(outstanding_invoices, args.get("company"))
 
 		for d in outstanding_invoices:
@@ -2258,6 +2263,11 @@ def get_outstanding_reference_documents(args: str | dict, validate: bool = False
 				company_currency,
 				condition=condition,
 			)
+			negative_outstanding_invoices = [
+				d
+				for d in negative_outstanding_invoices
+				if frappe.has_permission(d.voucher_type, "read", d.voucher_no)
+			]
 
 	# Get all SO / PO which are not fully billed or against which full advance not paid
 	orders_to_be_billed = []
@@ -2272,6 +2282,9 @@ def get_outstanding_reference_documents(args: str | dict, validate: bool = False
 			filters=args,
 		)
 
+		orders_to_be_billed = [
+			d for d in orders_to_be_billed if frappe.has_permission(d.voucher_type, "read", d.voucher_no)
+		]
 		orders_to_be_billed = split_refdocs_based_on_payment_terms(orders_to_be_billed, args.get("company"))
 
 	data = negative_outstanding_invoices + outstanding_invoices + orders_to_be_billed
