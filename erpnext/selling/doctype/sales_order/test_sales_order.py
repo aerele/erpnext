@@ -1356,6 +1356,118 @@ class TestSalesOrder(ERPNextTestSuite):
 				)
 			make_sales_order(item_code=item.name, uom="Box", do_not_submit=True)
 
+	@change_settings("Selling Settings", {"maintain_same_sales_rate": 1})
+	@change_settings("Stock Settings", {"auto_insert_price_list_rate_if_missing": 0})
+	def test_update_items_reprices_changed_uom(self):
+		for factor, stock_price, box_price, independent_price, discount, manual_rate, expected_rate in (
+			(10, 100, None, 0, 0, None, 1000),
+			(10, 100, 800, 0, 0, None, 800),
+			(10, 100, 0, 0, 0, None, 0),
+			(1, 100, 80, 0, 0, None, 80),
+			(10, 100, None, 1, 0, None, 100),
+			(10, 100, 800, 0, 10, None, 720),
+			(10, 100, 800, 0, 0, 850, 850),
+			(10, 100, 800, 0, 10, 850, 850),
+			(10, None, None, 0, 0, None, 100),
+		):
+			with self.subTest(
+				factor=factor,
+				stock_price=stock_price,
+				box_price=box_price,
+				independent_price=independent_price,
+				discount=discount,
+				manual_rate=manual_rate,
+			):
+				item = make_item(uoms=[{"uom": "Box", "conversion_factor": factor}])
+				price_list = frappe.get_doc(
+					{
+						"doctype": "Price List",
+						"price_list_name": f"_Test UOM Price {frappe.generate_hash(length=8)}",
+						"currency": "INR",
+						"selling": 1,
+						"price_not_uom_dependent": independent_price,
+					}
+				).insert()
+				for uom, rate in ((item.stock_uom, stock_price), ("Box", box_price)):
+					if rate is not None:
+						frappe.get_doc(
+							{
+								"doctype": "Item Price",
+								"item_code": item.name,
+								"price_list": price_list.name,
+								"uom": uom,
+								"price_list_rate": rate,
+							}
+						).insert()
+				if discount:
+					frappe.get_doc(
+						{
+							"doctype": "Pricing Rule",
+							"title": "_Test Box Discount",
+							"company": "_Test Company",
+							"selling": 1,
+							"apply_on": "Item Code",
+							"items": [{"item_code": item.name, "uom": "Box"}],
+							"price_or_product_discount": "Price",
+							"rate_or_discount": "Discount Percentage",
+							"discount_percentage": discount,
+							"min_amt": 1000,
+						}
+					).insert()
+
+				sales_order = make_sales_order(
+					item_code=item.name,
+					qty=2,
+					uom=item.stock_uom,
+					selling_price_list=price_list.name,
+					price_list_rate=100,
+				)
+				self.assertEqual(sales_order.items[0].rate, 100)
+				update_child_qty_rate(
+					"Sales Order",
+					json.dumps(
+						[
+							{
+								"docname": sales_order.items[0].name,
+								"item_code": item.name,
+								"qty": 2,
+								"uom": "Box",
+								"conversion_factor": factor,
+								"rate": manual_rate if manual_rate is not None else sales_order.items[0].rate,
+							}
+						]
+					),
+					sales_order.name,
+				)
+				sales_order.reload()
+				self.assertEqual(sales_order.items[0].uom, "Box")
+				self.assertEqual(sales_order.items[0].stock_qty, 2 * factor)
+				self.assertEqual(sales_order.items[0].rate, expected_rate)
+				self.assertEqual(sales_order.items[0].amount, 2 * expected_rate)
+				for mapper in (make_delivery_note, make_sales_invoice):
+					mapped = mapper(sales_order.name)
+					self.assertEqual(mapped.items[0].uom, "Box")
+					self.assertEqual(mapped.items[0].rate, expected_rate)
+
+				update_child_qty_rate(
+					"Sales Order",
+					json.dumps(
+						[
+							{
+								"docname": sales_order.items[0].name,
+								"item_code": item.name,
+								"qty": 2,
+								"uom": item.stock_uom,
+								"conversion_factor": 1,
+								"rate": sales_order.items[0].rate,
+							}
+						]
+					),
+					sales_order.name,
+				)
+				sales_order.reload()
+				self.assertEqual(sales_order.items[0].rate, manual_rate if manual_rate is not None else 100)
+
 	def test_update_items_rejects_unconfigured_uom(self):
 		item = make_item()
 		so = make_sales_order(item_code=item.name, qty=2)

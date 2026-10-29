@@ -367,6 +367,44 @@ class TestPurchaseOrder(ERPNextTestSuite):
 		self.assertEqual(po.get("items")[0].amount, 1400)
 		self.assertEqual(get_ordered_qty(), existing_ordered_qty + 3)
 
+	def test_update_items_reprices_changed_uom(self):
+		item = make_item(uoms=[{"uom": "Box", "conversion_factor": 10}])
+		for uom, rate in ((item.stock_uom, 100), ("Box", 800)):
+			frappe.get_doc(
+				{
+					"doctype": "Item Price",
+					"item_code": item.name,
+					"price_list": "Standard Buying",
+					"uom": uom,
+					"price_list_rate": rate,
+				}
+			).insert()
+		purchase_order = create_purchase_order(item_code=item.name, qty=2, rate=100, do_not_save=True)
+		purchase_order.buying_price_list = "Standard Buying"
+		purchase_order.insert().submit()
+
+		update_child_qty_rate(
+			"Purchase Order",
+			json.dumps(
+				[
+					{
+						"docname": purchase_order.items[0].name,
+						"item_code": item.name,
+						"qty": 2,
+						"uom": "Box",
+						"conversion_factor": 10,
+						"rate": 100,
+					}
+				]
+			),
+			purchase_order.name,
+		)
+		purchase_order.reload()
+		self.assertEqual(purchase_order.items[0].rate, 800)
+		self.assertEqual(purchase_order.items[0].price_list_rate, 800)
+		self.assertEqual(purchase_order.items[0].stock_qty, 20)
+		self.assertEqual(purchase_order.items[0].amount, 1600)
+
 	def test_update_child_qty_with_conversion_factor_after_receipt(self):
 		item = make_item(uoms=[{"uom": "Box", "conversion_factor": 5}])
 		purchase_order = create_purchase_order(item_code=item.item_code, qty=6, do_not_save=True)
