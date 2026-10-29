@@ -23,7 +23,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Opening Amount",
-   "options": "company:company_currency",
+   "options": "currency",
    "reqd": 1
   }
  ],

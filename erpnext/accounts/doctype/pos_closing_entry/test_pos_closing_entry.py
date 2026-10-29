@@ -25,6 +25,42 @@ class TestPOSClosingEntry(ERPNextTestSuite):
 		make_stock_entry(target="_Test Warehouse - _TC", qty=2, basic_rate=100)
 		frappe.db.set_single_value("POS Settings", "invoice_type", "POS Invoice")
 
+	def test_profile_currency_is_preserved_on_opening_and_closing(self):
+		self.pos_profile.currency = "USD"
+		self.pos_profile.save()
+		opening = create_opening_entry(self.pos_profile, self.test_user.name, get_obj=True)
+		self.assertEqual(opening.reload().currency, "USD")
+		closing = make_closing_entry_from_opening(opening)
+		closing.insert()
+		self.assertEqual(closing.reload().currency, "USD")
+
+		from frappe.model.meta import get_field_currency
+
+		balance = opening.balance_details[0]
+		self.assertEqual(get_field_currency(balance.meta.get_field("opening_amount"), balance), "USD")
+		self.assertEqual(get_field_currency(closing.meta.get_field("grand_total"), closing), "USD")
+
+		from erpnext.patches.v16_0.set_pos_entry_currency import execute
+
+		frappe.db.set_value(opening.doctype, opening.name, "currency", None)
+		frappe.db.set_value(closing.doctype, closing.name, "currency", "")
+		execute()
+		execute()
+		self.assertEqual(opening.reload().currency, "USD")
+		self.assertEqual(closing.reload().currency, "USD")
+		self.assertEqual(frappe.get_cached_value("Company", closing.company, "default_currency"), "INR")
+		for doctype in (
+			"POS Opening Entry Detail",
+			"POS Closing Entry Detail",
+			"POS Closing Entry Taxes",
+			"POS Invoice Reference",
+			"Sales Invoice Reference",
+			"POS Closing Entry",
+		):
+			for field in frappe.get_meta(doctype).fields:
+				if field.fieldtype == "Currency":
+					self.assertEqual(field.options, "currency")
+
 	def test_pos_closing_entry(self):
 		opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
 

@@ -49,7 +49,8 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount",
-   "reqd": 1
+   "reqd": 1,
+   "options": "currency"
   },
   {
    "default": "0",

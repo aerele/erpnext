@@ -25,7 +25,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Expected Amount",
-   "options": "company:company_currency",
+   "options": "currency",
    "read_only": 1
   },
   {
@@ -33,7 +33,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Difference",
-   "options": "company:company_currency",
+   "options": "currency",
    "read_only": 1
   },
   {
@@ -41,7 +41,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Opening Amount",
-   "options": "company:company_currency",
+   "options": "currency",
    "read_only": 1,
    "reqd": 1
   },
@@ -51,7 +51,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Closing Amount",
-   "options": "company:company_currency",
+   "options": "currency",
    "reqd": 1
   }
  ],

@@ -40,6 +40,7 @@ class POSClosingEntry(StatusUpdater):
 
 		amended_from: DF.Link | None
 		company: DF.Link
+		currency: DF.Link | None
 		error_message: DF.SmallText | None
 		grand_total: DF.Currency
 		net_total: DF.Currency
@@ -59,7 +60,12 @@ class POSClosingEntry(StatusUpdater):
 		user: DF.Link
 	# end: auto-generated types
 
+	def set_currency(self):
+		if self.pos_profile and (not self.currency or self.has_value_changed("pos_profile")):
+			self.currency = frappe.get_cached_value("POS Profile", self.pos_profile, "currency")
+
 	def validate(self):
+		self.set_currency()
 		self.set_posting_date_and_time()
 		self.fetch_invoice_type()
 		self.validate_pos_opening_entry()
@@ -379,6 +385,9 @@ def make_closing_entry_from_opening(opening_entry):
 	closing_entry.period_start_date = opening_entry.period_start_date
 	closing_entry.period_end_date = frappe.utils.get_datetime()
 	closing_entry.pos_profile = opening_entry.pos_profile
+	closing_entry.currency = opening_entry.currency or frappe.get_cached_value(
+		"POS Profile", opening_entry.pos_profile, "currency"
+	)
 	closing_entry.user = opening_entry.user
 	closing_entry.company = opening_entry.company
 	closing_entry.grand_total = 0

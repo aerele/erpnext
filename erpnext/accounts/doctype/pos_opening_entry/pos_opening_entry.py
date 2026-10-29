@@ -25,6 +25,7 @@ class POSOpeningEntry(StatusUpdater):
 		amended_from: DF.Link | None
 		balance_details: DF.Table[POSOpeningEntryDetail]
 		company: DF.Link
+		currency: DF.Link | None
 		period_end_date: DF.Date | None
 		period_start_date: DF.Datetime
 		pos_closing_entry: DF.Data | None
@@ -35,7 +36,12 @@ class POSOpeningEntry(StatusUpdater):
 		user: DF.Link
 	# end: auto-generated types
 
+	def set_currency(self):
+		if self.pos_profile and (not self.currency or self.has_value_changed("pos_profile")):
+			self.currency = frappe.get_cached_value("POS Profile", self.pos_profile, "currency")
+
 	def validate(self):
+		self.set_currency()
 		self.validate_pos_profile_and_cashier()
 		self.check_open_pos_exists()
 		self.check_user_already_assigned()

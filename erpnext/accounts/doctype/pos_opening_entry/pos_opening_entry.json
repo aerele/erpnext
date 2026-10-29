@@ -16,6 +16,7 @@
   "section_break_5",
   "company",
   "pos_profile",
+  "currency",
   "pos_closing_entry",
   "column_break_7",
   "user",
@@ -128,6 +129,14 @@
    "label": "Opening Balance Details",
    "options": "POS Opening Entry Detail",
    "reqd": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "fetch_from": "pos_profile.currency",
+   "read_only": 1
   }
  ],
  "icon": "folder-open",
