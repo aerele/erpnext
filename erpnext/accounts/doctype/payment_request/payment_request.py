@@ -650,7 +650,7 @@ class PaymentRequest(Document):
 			self.docstatus == 1
 			and self.payment_request_type == "Inward"
 			and self.payment_channel != "Phone"
-			and self.status not in ["Paid", "Completed", "Cancelled"]
+			and self.status not in ["Paid", "Cancelled"]
 		):
 			frappe.throw(_("Payment Link couldn't be sent."))
 

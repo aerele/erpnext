@@ -1263,7 +1263,7 @@ class TestPaymentRequest(ERPNextTestSuite):
 		self.assertEqual(request.status, "Initiated")
 		self.assertEqual(request.outstanding_amount, request.grand_total)
 		self.assertFalse(frappe.db.exists("Payment Entry Reference", {"payment_request": request.name}))
-		for status in ("Paid", "Completed", "Cancelled"):
+		for status in ("Paid", "Cancelled"):
 			request.db_set("status", status)
 			with self.assertRaises(frappe.ValidationError):
 				request.resend_payment_email()

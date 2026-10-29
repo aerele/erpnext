@@ -51,7 +51,7 @@ frappe.ui.form.on("Payment Request", "refresh", function (frm) {
 	if (
 		frm.doc.payment_request_type == "Inward" &&
 		frm.doc.payment_channel !== "Phone" &&
-		!["Paid", "Completed", "Cancelled"].includes(frm.doc.status) &&
+		!["Paid", "Cancelled"].includes(frm.doc.status) &&
 		!frm.doc.__islocal &&
 		frm.doc.docstatus == 1
 	) {
