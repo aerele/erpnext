@@ -478,7 +478,7 @@ class PurchaseInvoiceGLComposer(BaseGLComposer):
 		pr_items = frappe.get_all(
 			"Purchase Receipt Item",
 			filters={"parent": ("in", linked_purchase_receipts)},
-			fields=["name", "provisional_expense_account", "qty", "base_rate", "rate"],
+			fields=["name", "provisional_expense_account", "qty"],
 		)
 		default_provisional_account = doc.get_company_default("default_provisional_account")
 		provisional_accounts = {
@@ -494,38 +494,39 @@ class PurchaseInvoiceGLComposer(BaseGLComposer):
 				"account": ("in", provisional_accounts),
 				"is_cancelled": 0,
 			},
-			fields=["voucher_detail_no"],
+			fields=["voucher_detail_no", "credit", "debit"],
 		)
+		posted_amounts = {}
+		for entry in provisional_gl_entries:
+			posted_amounts[entry.voucher_detail_no] = (
+				posted_amounts.get(entry.voucher_detail_no, 0) + flt(entry.credit) - flt(entry.debit)
+			)
 		rows_with_provisional_entries = [d.voucher_detail_no for d in provisional_gl_entries]
 		for item in pr_items:
 			self.provisional_accounts[item.name] = {
 				"provisional_account": item.provisional_expense_account or default_provisional_account,
 				"qty": item.qty,
-				"base_rate": item.base_rate,
-				"rate": item.rate,
+				"base_rate": posted_amounts.get(item.name, 0) / flt(item.qty) if flt(item.qty) else 0,
 				"has_provisional_entry": item.name in rows_with_provisional_entries,
 			}
 
 	def make_provisional_gl_entry(self, gl_entries, item):
 		from erpnext.stock.doctype.purchase_receipt.services.provisional_accounting import (
 			ProvisionalAccountingService,
+			get_unit_amount,
 		)
 
 		service = ProvisionalAccountingService(self.doc)
 		if item.purchase_receipt:
 			pr_item = self.provisional_accounts.get(item.pr_detail, {})
 			if pr_item.get("has_provisional_entry"):
-				conversion_rate = frappe.get_cached_value(
-					"Purchase Receipt", item.purchase_receipt, "conversion_rate"
-				)
-
 				service.add_provisional_gl_entry(
 					item,
 					gl_entries,
 					self.doc.posting_date,
 					pr_item.get("provisional_account"),
 					reverse=1,
-					item_amount=(min(item.qty, pr_item.get("qty")) * pr_item.get("rate")) * conversion_rate,
+					item_amount=min(item.qty, pr_item.get("qty")) * pr_item.get("base_rate"),
 				)
 			return
 
@@ -536,7 +537,7 @@ class PurchaseInvoiceGLComposer(BaseGLComposer):
 				self.doc.posting_date,
 				row.provisional_expense_account,
 				reverse=1,
-				item_amount=qty * flt(row.rate) * flt(row.conversion_rate),
+				item_amount=qty * get_unit_amount(row),
 				pr_detail=row.name,
 			)
 

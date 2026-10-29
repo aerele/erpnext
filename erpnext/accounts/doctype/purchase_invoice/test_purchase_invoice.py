@@ -2066,6 +2066,47 @@ class TestPurchaseInvoice(ERPNextTestSuite, StockTestMixin):
 				# GL Entry with Purchase Invoice Amount
 				self.assertEqual(gle.credit, 3000)
 
+	def test_provisional_accounting_excludes_inclusive_tax(self):
+		setup_provisional_accounting()
+		self.addCleanup(toggle_provisional_accounting_setting)
+		receipt = make_purchase_receipt(item_code="_Test Non Stock Item", qty=2, rate=113, do_not_save=1)
+		receipt.append(
+			"taxes",
+			{
+				"charge_type": "On Net Total",
+				"account_head": "_Test Account Service Tax - _TC",
+				"description": "Inclusive tax",
+				"rate": 13,
+				"included_in_print_rate": 1,
+				"category": "Total",
+				"add_deduct_tax": "Add",
+			},
+		)
+		receipt.submit()
+		self.assertEqual(receipt.items[0].base_net_amount, 200)
+
+		def provision(voucher):
+			return sum(
+				row.credit - row.debit
+				for row in frappe.get_all(
+					"GL Entry",
+					filters={
+						"voucher_no": voucher.name,
+						"account": "Provision Account - _TC",
+						"is_cancelled": 0,
+					},
+					fields=["credit", "debit"],
+				)
+			)
+
+		self.assertEqual(provision(receipt), 200)
+		invoice = create_purchase_invoice_from_receipt(receipt.name)
+		invoice.items[0].qty = 1
+		invoice.submit()
+		self.assertEqual(provision(invoice), -100)
+		invoice.reload().cancel()
+		self.assertEqual(provision(receipt), 200)
+
 	def test_provisional_accounting_entry(self):
 		setup_provisional_accounting()
 

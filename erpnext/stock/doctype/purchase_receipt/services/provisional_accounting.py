@@ -38,7 +38,7 @@ class ProvisionalAccountingService:
 		debit_currency = get_account_currency(item.expense_account)
 		remarks = doc.get("remarks") or _("Accounting Entry for Service")
 		multiplication_factor = 1
-		amount = item.base_amount
+		amount = item.base_net_amount
 
 		if reverse:
 			multiplication_factor = -1
@@ -142,7 +142,7 @@ def get_ratio(posted_amount, replayed_amount) -> float:
 
 
 def get_unit_amount(row) -> float:
-	return flt(row.rate) * flt(row.conversion_rate)
+	return flt(row.base_net_amount) / flt(row.qty) if flt(row.qty) else 0
 
 
 def get_reversal_amount(allocations) -> float:
@@ -249,7 +249,7 @@ def get_provisional_receipt_rows(company, po_details) -> dict:
 			pr_item.name,
 			pr_item.purchase_order_item,
 			pr_item.qty,
-			pr_item.rate,
+			pr_item.base_net_amount,
 			pr_item.provisional_expense_account,
 			pr.conversion_rate,
 		)
