@@ -552,6 +552,23 @@ class PaymentRequest(Document):
 			}
 		)
 
+	def on_payment_authorized(self, status=None):
+		if status not in ("Authorized", "Verified", "Completed"):
+			return
+
+		# Gateways retry callbacks, so refresh the outstanding amount under a row lock.
+		frappe.db.get_value("Payment Request", self.name, "name", for_update=True)
+		self.reload()
+		if (
+			self.docstatus != 1
+			or self.payment_request_type != "Inward"
+			or self.status in ("Paid", "Completed", "Cancelled")
+			or not flt(self.outstanding_amount)
+		):
+			return
+
+		self.set_as_paid()
+
 	def set_as_paid(self):
 		if self.payment_channel == "Phone":
 			self.db_set({"status": "Paid", "outstanding_amount": 0})

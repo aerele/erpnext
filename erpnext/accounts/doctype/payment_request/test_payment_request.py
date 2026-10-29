@@ -111,6 +111,34 @@ class TestPaymentRequest(ERPNextTestSuite):
 		self.get_payment_url = GET_PAYMENT_URL_MOCK
 		self._get_payment_gateway_controller = GET_PAYMENT_GATEWAY_CONTROLLER_MOCK
 
+	def test_gateway_callback_finalizes_once(self):
+		for status in ("Authorized", "Verified", "Completed"):
+			with self.subTest(status=status):
+				invoice = create_sales_invoice()
+				request = make_payment_request(
+					dt="Sales Invoice",
+					dn=invoice.name,
+					payment_gateway_account="_Test Gateway - INR - _TC",
+					mute_email=1,
+					submit_doc=1,
+					return_doc=1,
+				)
+				stale_request = frappe.get_doc("Payment Request", request.name)
+				self.assertIsNone(request.on_payment_authorized("Failed"))
+				invoice.reload()
+				self.assertGreater(invoice.outstanding_amount, 0)
+
+				self.assertIsNone(request.on_payment_authorized(status))
+				self.assertEqual(invoice.reload().outstanding_amount, 0)
+				self.assertEqual(request.reload().status, "Paid")
+				self.assertIsNone(stale_request.on_payment_authorized("Authorized"))
+				self.assertEqual(
+					frappe.db.count(
+						"Payment Entry Reference", {"payment_request": request.name, "docstatus": 1}
+					),
+					1,
+				)
+
 	def test_payment_request_linkings(self):
 		so_inr = make_sales_order(currency="INR", do_not_save=True)
 		so_inr.disable_rounded_total = 1
