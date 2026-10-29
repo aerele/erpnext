@@ -18,6 +18,7 @@ from erpnext.stock.doctype.packed_item.packed_item import make_packing_list
 from erpnext.stock.get_item_details import (
 	_get_bin_details,
 	get_conversion_factor,
+	get_item_details,
 	get_item_warehouse_,
 )
 from erpnext.stock.utils import (
@@ -94,6 +95,23 @@ class ChildItemUpdater:
 					self._check_permissions("write")
 					child_item = frappe.get_doc(self.parent_doctype + " Item", d.get("docname"))
 					d["conversion_factor"] = self._get_new_conversion_factor(child_item, d)
+					if d.get("uom") and d["uom"] != child_item.uom:
+						pricing = get_repriced_item(self.parent, child_item, d)
+						if flt(d.get("rate")) == flt(child_item.rate):
+							d["rate"] = pricing.rate
+						child_item.update(
+							{
+								field: pricing.get(field)
+								for field in (
+									"price_list_rate",
+									"pricing_rules",
+									"margin_type",
+									"margin_rate_or_amount",
+									"discount_percentage",
+									"discount_amount",
+								)
+							}
+						)
 
 					change_state = get_child_item_change_state(self.parent_doctype, child_item, d)
 					rate_unchanged = change_state.rate_unchanged
@@ -521,6 +539,61 @@ def update_child_qty_rate(
 	parent_doctype: str, trans_items: str | list, parent_doctype_name: str, child_docname: str = "items"
 ) -> None:
 	ChildItemUpdater(parent_doctype, parent_doctype_name, child_docname).update(trans_items)
+
+
+@frappe.whitelist()
+def get_updated_item_price(parent_doctype: str, parent_name: str, item_name: str, uom: str, qty: float):
+	if parent_doctype not in ("Sales Order", "Purchase Order", "Quotation", "Supplier Quotation"):
+		frappe.throw(_("Unsupported document type"))
+	parent = frappe.get_doc(parent_doctype, parent_name)
+	parent.check_permission("write")
+	item = next((row for row in parent.items if row.name == item_name), None)
+	if not item:
+		frappe.throw(_("Item row does not belong to this document"))
+	return get_repriced_item(parent, item, {"uom": uom, "qty": qty})
+
+
+def get_repriced_item(parent, item, changes):
+	from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
+
+	ctx = parent.as_dict().copy()
+	ctx.update(item.as_dict())
+	ctx.update(changes)
+	ctx.doctype = parent.doctype
+	ctx.name = parent.name
+	ctx.child_doctype = item.doctype
+	ctx.price_list = parent.get("selling_price_list") or parent.get("buying_price_list")
+	for field in (
+		"rate",
+		"price_list_rate",
+		"discount_amount",
+		"discount_percentage",
+		"margin_rate_or_amount",
+		"conversion_factor",
+	):
+		ctx[field] = None
+	ctx.margin_type = ""
+	ctx.pricing_rules = ""
+	pricing = get_item_details(ctx, doc=parent)
+	row = frappe.new_doc(item.doctype, parent_doc=parent, parentfield="items")
+	row.update(pricing)
+	row.rate = pricing.get("rate") or 0
+	calculate_taxes_and_totals.calculate_item_rate(frappe._dict(doc=parent), row)
+	return frappe._dict(
+		{
+			field: row.get(field)
+			for field in (
+				"rate",
+				"price_list_rate",
+				"conversion_factor",
+				"pricing_rules",
+				"margin_type",
+				"margin_rate_or_amount",
+				"discount_percentage",
+				"discount_amount",
+			)
+		}
+	)
 
 
 def set_order_defaults(

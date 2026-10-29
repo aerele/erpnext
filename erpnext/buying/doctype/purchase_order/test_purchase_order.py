@@ -30,6 +30,51 @@ from erpnext.tests.utils import ERPNextTestSuite
 
 
 class TestPurchaseOrder(ERPNextTestSuite):
+	def test_update_items_reprices_stock_uom_price(self):
+		item = make_item("_Test Buying UOM Price", {"is_stock_item": 0})
+		item.append("uoms", {"uom": "Box", "conversion_factor": 10})
+		item.save()
+		price_list = frappe.get_doc(
+			{
+				"doctype": "Price List",
+				"price_list_name": "_Test Buying UOM Price",
+				"buying": 1,
+				"enabled": 1,
+				"currency": "INR",
+				"price_not_uom_dependent": 0,
+			}
+		).insert()
+		frappe.get_doc(
+			{
+				"doctype": "Item Price",
+				"item_code": item.name,
+				"price_list": price_list.name,
+				"uom": item.stock_uom,
+				"price_list_rate": 100,
+			}
+		).insert()
+		order = create_purchase_order(item_code=item.name, qty=1, rate=100, do_not_save=True)
+		order.buying_price_list = price_list.name
+		order.submit()
+		update_child_qty_rate(
+			order.doctype,
+			[
+				{
+					"docname": order.items[0].name,
+					"item_code": item.name,
+					"uom": "Box",
+					"conversion_factor": 10,
+					"qty": 1,
+					"rate": 100,
+				}
+			],
+			order.name,
+		)
+		order.reload()
+		self.assertEqual(order.items[0].rate, 1000)
+		self.assertEqual(order.items[0].price_list_rate, 1000)
+		self.assertEqual(order.items[0].stock_qty, 10)
+
 	@ERPNextTestSuite.change_settings("Buying Settings", {"allow_multiple_items": 1})
 	def test_purchase_order_qty(self):
 		po = create_purchase_order(qty=1, do_not_save=True)

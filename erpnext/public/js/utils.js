@@ -940,21 +940,33 @@ erpnext.utils.update_child_items = function (opts) {
 				filters: { item_code: row.item_code },
 			}),
 			onchange: function () {
-				frappe.call({
-					method: "erpnext.stock.get_item_details.get_conversion_factor",
-					args: { item_code: this.doc.item_code, uom: this.value },
+				const row = this.doc;
+				const uom = this.value;
+				if (!row.docname) {
+					return frappe.call({
+						method: "erpnext.stock.get_item_details.get_conversion_factor",
+						args: { item_code: row.item_code, uom },
+						callback: (r) => {
+							if (r.message && row.uom === uom) {
+								row.conversion_factor = r.message.conversion_factor;
+								dialog.fields_dict.trans_items.grid.refresh();
+							}
+						},
+					});
+				}
+				return frappe.call({
+					method: "erpnext.accounts.services.child_item_update.get_updated_item_price",
+					args: {
+						parent_doctype: frm.doc.doctype,
+						parent_name: frm.doc.name,
+						item_name: row.docname,
+						uom,
+						qty: row.qty,
+					},
 					callback: (r) => {
-						if (!r.exc) {
-							if (this.doc.conversion_factor == r.message.conversion_factor) return;
-
-							const docname = this.doc.docname;
-							dialog.fields_dict.trans_items.df.data.some((doc) => {
-								if (doc.docname == docname) {
-									doc.conversion_factor = r.message.conversion_factor;
-									dialog.fields_dict.trans_items.grid.refresh();
-									return true;
-								}
-							});
+						if (r.message && row.uom === uom) {
+							Object.assign(row, r.message);
+							dialog.fields_dict.trans_items.grid.refresh();
 						}
 					},
 				});

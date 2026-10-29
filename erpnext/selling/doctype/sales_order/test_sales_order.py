@@ -1356,6 +1356,98 @@ class TestSalesOrder(ERPNextTestSuite):
 				)
 			make_sales_order(item_code=item.name, uom="Box", do_not_submit=True)
 
+	def test_update_items_reprices_changed_uom(self):
+		from erpnext.accounts.services.child_item_update import get_updated_item_price
+
+		item = make_item("_Test Update UOM Price", {"is_stock_item": 0})
+		item.append("uoms", {"uom": "Box", "conversion_factor": 10})
+		item.save()
+		for uom, rate in ((item.stock_uom, 100), ("Box", 850)):
+			frappe.get_doc(
+				{
+					"doctype": "Item Price",
+					"item_code": item.name,
+					"price_list": "_Test Price List",
+					"uom": uom,
+					"price_list_rate": rate,
+				}
+			).insert()
+		order = make_sales_order(item_code=item.name, qty=1, rate=100, selling_price_list="_Test Price List")
+		row = order.items[0]
+		price = get_updated_item_price(order.doctype, order.name, row.name, "Box", 1)
+		self.assertEqual(price.rate, 850)
+		update_child_qty_rate(
+			"Sales Order",
+			[
+				{
+					"docname": row.name,
+					"item_code": row.item_code,
+					"uom": "Box",
+					"conversion_factor": 10,
+					"qty": 1,
+					"rate": row.rate,
+				}
+			],
+			order.name,
+		)
+		order.reload()
+		self.assertEqual(order.items[0].rate, 850)
+		self.assertEqual(order.items[0].price_list_rate, 850)
+		self.assertEqual(order.items[0].stock_qty, 10)
+		invoice = make_sales_invoice(order.name)
+		self.assertEqual(invoice.items[0].rate, 850)
+
+		# A rate explicitly edited along with the UOM must be kept.
+		update_child_qty_rate(
+			"Sales Order",
+			[
+				{
+					"docname": row.name,
+					"item_code": item.name,
+					"uom": item.stock_uom,
+					"conversion_factor": 1,
+					"qty": 1,
+					"rate": 90,
+				}
+			],
+			order.name,
+		)
+		order.reload()
+		self.assertEqual(order.items[0].rate, 90)
+		self.assertEqual(order.items[0].price_list_rate, 100)
+
+		rule = frappe.get_doc(
+			{
+				"doctype": "Pricing Rule",
+				"title": "_Test Box UOM Discount",
+				"company": order.company,
+				"selling": 1,
+				"apply_on": "Item Code",
+				"items": [{"item_code": item.name, "uom": "Box"}],
+				"rate_or_discount": "Discount Percentage",
+				"discount_percentage": 10,
+				"price_or_product_discount": "Price",
+			}
+		).insert()
+		for uom, factor, expected in (("Box", 10, 765), (item.stock_uom, 1, 100)):
+			update_child_qty_rate(
+				"Sales Order",
+				[
+					{
+						"docname": row.name,
+						"item_code": item.name,
+						"uom": uom,
+						"conversion_factor": factor,
+						"qty": 1,
+						"rate": order.items[0].rate,
+					}
+				],
+				order.name,
+			)
+			order.reload()
+			self.assertEqual(order.items[0].rate, expected)
+			self.assertEqual(rule.name in (order.items[0].pricing_rules or ""), uom == "Box")
+
 	def test_update_items_rejects_unconfigured_uom(self):
 		item = make_item()
 		so = make_sales_order(item_code=item.name, qty=2)
