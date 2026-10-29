@@ -170,53 +170,7 @@ class calculate_taxes_and_totals:
 		self.doc.conversion_rate = flt(self.doc.conversion_rate)
 
 	def calculate_item_rate(self, item):
-		if not item.price_list_rate:
-			remove_margin(item)
-			remove_discount(item)
-			item.rate_with_margin = 0
-			return
-
-		# An item no rule applied to may still hold "[]", which must not override the rate typed in
-		applied_rules = get_applied_pricing_rules(item.pricing_rules)
-		has_pricing_rules = bool(applied_rules) and not self.doc.ignore_pricing_rule
-		if has_pricing_rules:
-			remove_margin(item)
-
-			for d in applied_rules:
-				pricing_rule = frappe.get_cached_doc("Pricing Rule", d)
-				apply_pricing_rule_margin(pricing_rule, item, self.doc)
-
-		item.rate_with_margin = get_rate_with_margin(item)
-		if item.discount_percentage > 0:
-			item.discount_amount = flt(
-				item.rate_with_margin * item.discount_percentage / 100.0, item.precision("discount_amount")
-			)
-
-		calculated_rate = flt(item.rate_with_margin - item.discount_amount, item.precision("rate"))
-
-		# if rate is 0 or pricing rules are applicable, calculated rate is preferred
-		if has_pricing_rules or not item.rate:
-			item.rate = calculated_rate
-			return
-
-		# discount and margin are correct, exit early
-		if item.rate == calculated_rate:
-			return
-
-		# item rate does not match calculated rate. prefer item rate, reset margin / discount
-		if item.rate > item.price_list_rate:
-			item.margin_type = "Amount"
-			item.margin_rate_or_amount = flt(
-				item.rate - item.price_list_rate, item.precision("margin_rate_or_amount")
-			)
-			item.rate_with_margin = item.rate
-			remove_discount(item)
-			return
-
-		item.rate_with_margin = item.price_list_rate
-		item.discount_amount = flt(item.rate_with_margin - item.rate, item.precision("discount_amount"))
-		item.discount_percentage = 0
-		remove_margin(item)
+		calculate_item_rate(item, self.doc)
 
 	def calculate_item_values(self):
 		if self.doc.get("is_consolidated") or self.discount_amount_applied:
@@ -1268,6 +1222,57 @@ class calculate_taxes_and_totals:
 						"default": 1,
 					},
 				)
+
+
+def calculate_item_rate(item, doc):
+	"""Apply pricing rules or reconcile a manually entered rate for one item."""
+	if not item.price_list_rate:
+		remove_margin(item)
+		remove_discount(item)
+		item.rate_with_margin = 0
+		return
+
+	# An item no rule applied to may still hold "[]", which must not override the rate typed in
+	applied_rules = get_applied_pricing_rules(item.pricing_rules)
+	has_pricing_rules = bool(applied_rules) and not doc.ignore_pricing_rule
+	if has_pricing_rules:
+		remove_margin(item)
+
+		for d in applied_rules:
+			pricing_rule = frappe.get_cached_doc("Pricing Rule", d)
+			apply_pricing_rule_margin(pricing_rule, item, doc)
+
+	item.rate_with_margin = get_rate_with_margin(item)
+	if item.discount_percentage > 0:
+		item.discount_amount = flt(
+			item.rate_with_margin * item.discount_percentage / 100.0, item.precision("discount_amount")
+		)
+
+	calculated_rate = flt(item.rate_with_margin - item.discount_amount, item.precision("rate"))
+
+	# if rate is 0 or pricing rules are applicable, calculated rate is preferred
+	if has_pricing_rules or not item.rate:
+		item.rate = calculated_rate
+		return
+
+	# discount and margin are correct, exit early
+	if item.rate == calculated_rate:
+		return
+
+	# item rate does not match calculated rate. prefer item rate, reset margin / discount
+	if item.rate > item.price_list_rate:
+		item.margin_type = "Amount"
+		item.margin_rate_or_amount = flt(
+			item.rate - item.price_list_rate, item.precision("margin_rate_or_amount")
+		)
+		item.rate_with_margin = item.rate
+		remove_discount(item)
+		return
+
+	item.rate_with_margin = item.price_list_rate
+	item.discount_amount = flt(item.rate_with_margin - item.rate, item.precision("discount_amount"))
+	item.discount_percentage = 0
+	remove_margin(item)
 
 
 def remove_discount(item):

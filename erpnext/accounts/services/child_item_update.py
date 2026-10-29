@@ -554,7 +554,7 @@ def get_updated_item_price(parent_doctype: str, parent_name: str, item_name: str
 
 
 def get_repriced_item(parent, item, changes):
-	from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
+	from erpnext.controllers.taxes_and_totals import calculate_item_rate
 
 	ctx = parent.as_dict().copy()
 	ctx.update(item.as_dict())
@@ -578,7 +578,7 @@ def get_repriced_item(parent, item, changes):
 	row = frappe.new_doc(item.doctype, parent_doc=parent, parentfield="items")
 	row.update(pricing)
 	row.rate = pricing.get("rate") or 0
-	calculate_taxes_and_totals.calculate_item_rate(frappe._dict(doc=parent), row)
+	calculate_item_rate(row, parent)
 	return frappe._dict(
 		{
 			field: row.get(field)
