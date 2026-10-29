@@ -8190,6 +8190,81 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 
 		self.assertEqual(self.get_provisional_balance(receipt.name, invoice.name), 0)
 
+	def make_discounted_provisional_receipt(self, legacy=False):
+		from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import (
+			setup_provisional_accounting,
+			toggle_provisional_accounting_setting,
+		)
+		from erpnext.buying.doctype.purchase_order.mapper import make_purchase_receipt as from_order
+		from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
+		from erpnext.stock.doctype.purchase_receipt.services.provisional_accounting import (
+			ProvisionalAccountingService,
+		)
+
+		setup_provisional_accounting()
+		self.addCleanup(toggle_provisional_accounting_setting)
+		order = create_purchase_order(item_code="_Test Non Stock Item", qty=10, rate=113, do_not_save=True)
+		order.apply_discount_on = "Net Total"
+		order.additional_discount_percentage = 10
+		order.append(
+			"taxes",
+			{
+				"charge_type": "On Net Total",
+				"account_head": "_Test Account Service Tax - _TC",
+				"description": "Inclusive tax",
+				"rate": 13,
+				"included_in_print_rate": 1,
+				"category": "Total",
+				"add_deduct_tax": "Add",
+			},
+		)
+		order.submit()
+		receipt = from_order(order.name)
+		original = ProvisionalAccountingService.add_provisional_gl_entry
+
+		def book_legacy_amount(service, item, *args, **kwargs):
+			with patch.object(item, "base_net_amount", item.base_amount):
+				return original(service, item, *args, **kwargs)
+
+		if legacy:
+			with patch.object(ProvisionalAccountingService, "add_provisional_gl_entry", book_legacy_amount):
+				receipt.submit()
+		else:
+			receipt.submit()
+		self.assertEqual(receipt.items[0].base_net_amount, 900)
+		self.assertEqual(receipt.items[0].base_amount, 1130)
+		return order, receipt
+
+	def test_order_invoice_reverses_net_provision_with_tax_and_discount(self):
+		self.check_order_invoice_provision_with_tax_and_discount(legacy=False)
+
+	def test_order_invoice_reverses_legacy_gross_provision(self):
+		self.check_order_invoice_provision_with_tax_and_discount(legacy=True)
+
+	def check_order_invoice_provision_with_tax_and_discount(self, legacy):
+		order, receipt = self.make_discounted_provisional_receipt(legacy=legacy)
+		booked = 1130 if legacy else 900
+		self.assertEqual(self.get_provisional_balance(receipt.name), -booked)
+		first = make_invoice_against_order(order.name, qty=4, rate=113)
+		self.assertFalse(first.items[0].pr_detail)
+		self.assertEqual(self.get_provisional_balance(receipt.name, first.name), -booked * 0.6)
+		last = make_invoice_against_order(order.name, qty=6, rate=113)
+		self.assertEqual(self.get_provisional_balance(receipt.name, first.name, last.name), 0)
+		last.reload().cancel()
+		self.assertEqual(self.get_provisional_balance(receipt.name, first.name), -booked * 0.6)
+		first.reload().cancel()
+		self.assertEqual(self.get_provisional_balance(receipt.name), -booked)
+
+	def test_mixed_receipt_and_order_invoice_reverses_legacy_gross_provision(self):
+		order, receipt = self.make_discounted_provisional_receipt(legacy=True)
+		invoice = make_purchase_invoice(receipt.name)
+		invoice.items[0].qty = 4
+		order_row = invoice.items[0].as_dict(no_default_fields=True)
+		order_row.update({"qty": 6, "purchase_receipt": None, "pr_detail": None})
+		invoice.append("items", order_row)
+		invoice.submit()
+		self.assertEqual(self.get_provisional_balance(receipt.name, invoice.name), 0)
+
 	def test_order_invoices_reverse_receipt_provisional_entries(self):
 		purchase_order = self.make_provisional_purchase_order()
 		receipts = make_receipts_against_order(purchase_order.name, ((6, "08:00"), (4, "10:00")))

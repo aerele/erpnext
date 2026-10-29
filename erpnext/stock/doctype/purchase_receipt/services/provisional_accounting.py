@@ -142,7 +142,7 @@ def get_ratio(posted_amount, replayed_amount) -> float:
 
 
 def get_unit_amount(row) -> float:
-	return flt(row.base_net_amount) / flt(row.qty) if flt(row.qty) else 0
+	return flt(row.provisional_amount) / flt(row.qty) if flt(row.qty) else 0
 
 
 def get_reversal_amount(allocations) -> float:
@@ -249,9 +249,7 @@ def get_provisional_receipt_rows(company, po_details) -> dict:
 			pr_item.name,
 			pr_item.purchase_order_item,
 			pr_item.qty,
-			pr_item.base_net_amount,
 			pr_item.provisional_expense_account,
-			pr.conversion_rate,
 		)
 		.where((pr_item.purchase_order_item.isin(po_details)) & (pr.docstatus == 1) & (pr.is_return == 0))
 		.orderby(pr.posting_date)
@@ -271,23 +269,25 @@ def group_rows_with_provisional_entries(rows) -> dict:
 		return {}
 
 	gle = frappe.qb.DocType("GL Entry")
-	rows_with_entries = set(
+	posted_amounts = dict(
 		(
 			frappe.qb.from_(gle)
-			.select(gle.voucher_detail_no)
-			.distinct()
+			.select(gle.voucher_detail_no, Sum(gle.credit - gle.debit))
 			.where(
 				(gle.voucher_type == "Purchase Receipt")
 				& (gle.voucher_detail_no.isin([d.name for d in rows]))
 				& (gle.account.isin({d.provisional_expense_account for d in rows}))
 				& (gle.is_cancelled == 0)
 			)
-		).run(pluck=True)
+			.groupby(gle.voucher_detail_no)
+		).run()
 	)
 
 	grouped = {}
 	for row in rows:
-		if row.name in rows_with_entries:
+		if row.name in posted_amounts:
+			# Older receipts may have booked a gross amount instead of the net amount.
+			row.provisional_amount = posted_amounts[row.name]
 			grouped.setdefault(row.purchase_order_item, []).append(row)
 
 	return grouped
