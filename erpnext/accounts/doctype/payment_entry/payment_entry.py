@@ -2245,8 +2245,8 @@ def get_outstanding_reference_documents(args: str | dict, validate: bool = False
 				if d.voucher_type in frappe.get_hooks("invoice_doctypes"):
 					d["exchange_rate"] = frappe.db.get_value(d.voucher_type, d.voucher_no, "conversion_rate")
 				elif d.voucher_type == "Journal Entry":
-					d["exchange_rate"] = get_exchange_rate(
-						party_account_currency, company_currency, d.posting_date
+					d["exchange_rate"] = get_journal_entry_exchange_rate(
+						d.voucher_no, args.get("party_type"), args.get("party"), party_account_currency
 					)
 			if d.voucher_type in ("Purchase Invoice"):
 				d["bill_no"] = frappe.db.get_value(d.voucher_type, d.voucher_no, "bill_no")
@@ -2596,6 +2596,31 @@ def get_company_defaults(company: str):
 	return frappe.get_cached_value("Company", company, fields, as_dict=1)
 
 
+def get_journal_entry_exchange_rate(voucher_no, party_type, party, account_currency):
+	rows = frappe.get_all(
+		"Journal Entry Account",
+		filters={
+			"parent": voucher_no,
+			"party_type": party_type,
+			"party": party,
+			"account_currency": account_currency,
+		},
+		fields=[
+			"debit",
+			"credit",
+			"debit_in_account_currency",
+			"credit_in_account_currency",
+			"reference_type",
+			"reference_name",
+		],
+	)
+	rows = [
+		row for row in rows if not row.reference_name or row.reference_type in get_advance_payment_doctypes()
+	]
+	amount = sum(row.debit_in_account_currency - row.credit_in_account_currency for row in rows)
+	return sum(row.debit - row.credit for row in rows) / amount if amount else 1
+
+
 def get_outstanding_on_journal_entry(voucher_no, party_type, party):
 	ple = frappe.qb.DocType("Payment Ledger Entry")
 
@@ -2652,7 +2677,9 @@ def get_reference_details(
 
 	elif reference_doctype == "Journal Entry" and ref_doc.docstatus == 1:
 		if ref_doc.multi_currency:
-			exchange_rate = get_exchange_rate(party_account_currency, company_currency, ref_doc.posting_date)
+			exchange_rate = get_journal_entry_exchange_rate(
+				reference_name, party_type, party, party_account_currency
+			)
 		else:
 			exchange_rate = 1
 		outstanding_amount, total_amount = get_outstanding_on_journal_entry(reference_name, party_type, party)
