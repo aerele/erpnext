@@ -71,6 +71,29 @@ class TestTrialBalance(ERPNextTestSuite):
 class TestTrialBalanceReport(ERPNextTestSuite):
 	"""Correctness tests using fresh accounts so the asserted rows are unpolluted."""
 
+	def test_future_opening_entry_is_excluded_from_earlier_period(self):
+		from erpnext.accounts.doctype.journal_entry.test_journal_entry import make_journal_entry
+		from erpnext.accounts.utils import get_fiscal_year
+
+		entry = make_journal_entry(
+			"_Test Cash - _TC",
+			"_Test Bank - _TC",
+			100,
+			posting_date="2025-09-01",
+			save=False,
+		)
+		entry.voucher_type = "Opening Entry"
+		entry.insert()
+		entry.submit()
+
+		rows, _ = self.rows_by_account(
+			fiscal_year=get_fiscal_year("2025-06-30", company="_Test Company")[0],
+			from_date="2025-01-01",
+			to_date="2025-06-30",
+		)
+		self.assertEqual(rows.get("_Test Cash - _TC", {}).get("opening_debit", 0), 0)
+		self.assertEqual(rows.get("_Test Cash - _TC", {}).get("debit", 0), 0)
+
 	def make_accounts_and_entry(self, amount, posting_date):
 		from erpnext.accounts.doctype.account.test_account import create_account
 		from erpnext.accounts.doctype.journal_entry.test_journal_entry import make_journal_entry

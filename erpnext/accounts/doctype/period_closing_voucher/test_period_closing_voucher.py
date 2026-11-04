@@ -25,6 +25,120 @@ class TestPeriodClosingVoucher(ERPNextTestSuite):
 		super().setUp()
 		frappe.db.set_single_value("Accounts Settings", "use_legacy_controller_for_pcv", 1)
 
+	def test_opening_entry_after_closed_period(self):
+		pcv = self.make_period_closing_voucher(posting_date="2021-03-31")
+		cost_center = create_cost_center("Test Cost Center 1")
+
+		def opening_entry(posting_date):
+			entry = make_journal_entry(
+				account1="Cash - TPC",
+				account2=pcv.closing_account_head,
+				amount=100,
+				cost_center=cost_center,
+				posting_date=posting_date,
+				company="Test PCV Company",
+				save=False,
+			)
+			entry.voucher_type = "Opening Entry"
+			return entry
+
+		with self.assertRaisesRegex(frappe.ValidationError, "end of a closed period"):
+			opening_entry(pcv.period_end_date).insert()
+
+		entry = opening_entry("2022-03-31")
+		entry.insert()
+		entry.submit()
+
+		from erpnext.stock.doctype.item.test_item import make_item
+		from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import (
+			create_stock_reconciliation,
+		)
+
+		item = make_item("Test PCV Later Opening Stock", {"is_stock_item": 1})
+		stock_reconciliation = create_stock_reconciliation(
+			company="Test PCV Company",
+			item_code=item.name,
+			warehouse="Stores - TPC",
+			qty=2,
+			rate=100,
+			posting_date="2022-03-31",
+			purpose="Opening Stock",
+			expense_account=pcv.closing_account_head,
+		)
+		self.assertEqual(stock_reconciliation.docstatus, 1)
+
+		opening_gl_entries = pcv.get_gl_entries_for_current_period("Balance Sheet", only_opening_entries=True)
+		entry_gl_names = frappe.get_all("GL Entry", {"voucher_no": entry.name}, pluck="name")
+		stock_gl_names = frappe.get_all("GL Entry", {"voucher_no": stock_reconciliation.name}, pluck="name")
+		self.assertTrue(entry_gl_names)
+		self.assertTrue(stock_gl_names)
+		self.assertFalse(
+			(set(entry_gl_names) | set(stock_gl_names)) & {gle.name for gle in opening_gl_entries}
+		)
+		self.assertTrue(
+			all(
+				task["to_date"] <= str(pcv.period_end_date)
+				for task in pcv.generate_tasks_for_opening_balance()
+			)
+		)
+
+	def test_opening_invoices_after_closed_period(self):
+		from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import make_purchase_invoice
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		pcv = self.make_period_closing_voucher(posting_date="2021-03-31")
+		cost_center = create_cost_center("Test Cost Center 1")
+		posting_date = "2022-03-31"
+
+		sales_invoice = create_sales_invoice(
+			company="Test PCV Company",
+			customer="_Test Customer USD",
+			debit_to="Debtors - TPC",
+			currency="USD",
+			income_account=pcv.closing_account_head,
+			expense_account="Cost of Goods Sold - TPC",
+			cost_center=cost_center,
+			posting_date=posting_date,
+			do_not_save=True,
+		)
+		sales_invoice.is_opening = "Yes"
+		sales_invoice.insert()
+		sales_invoice.submit()
+
+		purchase_invoice = make_purchase_invoice(
+			company="Test PCV Company",
+			supplier="_Test Supplier",
+			currency="USD",
+			expense_account=pcv.closing_account_head,
+			cost_center=cost_center,
+			posting_date=posting_date,
+			warehouse="Stores - TPC",
+			supplier_warehouse="Stores - TPC",
+			do_not_save=True,
+		)
+		purchase_invoice.is_opening = "Yes"
+		purchase_invoice.credit_to = "Creditors - TPC"
+		purchase_invoice.insert()
+		purchase_invoice.submit()
+
+		for invoice in (sales_invoice, purchase_invoice):
+			gl_entries = frappe.get_all(
+				"GL Entry",
+				filters={
+					"voucher_type": invoice.doctype,
+					"voucher_no": invoice.name,
+					"company": invoice.company,
+					"is_cancelled": 0,
+				},
+				fields=["is_opening"],
+			)
+			self.assertEqual(invoice.docstatus, 1)
+			self.assertTrue(gl_entries)
+			self.assertTrue(all(entry.is_opening == "Yes" for entry in gl_entries))
+
+		self.assertTrue(pcv.is_first_period_closing_voucher())
+		self.assertFalse(pcv.generate_tasks_for_opening_balance())
+
 	def test_closing_entry(self):
 		cost_center = create_cost_center("Test Cost Center 1")
 

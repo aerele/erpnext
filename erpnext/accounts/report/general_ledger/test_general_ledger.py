@@ -12,6 +12,29 @@ from erpnext.tests.utils import ERPNextTestSuite
 
 
 class TestGeneralLedger(ERPNextTestSuite):
+	def test_future_opening_entry_is_excluded_from_earlier_period(self):
+		from erpnext.accounts.doctype.journal_entry.test_journal_entry import make_journal_entry
+
+		entry = make_journal_entry(
+			"_Test Cash - _TC",
+			"_Test Bank - _TC",
+			100,
+			posting_date="2025-09-01",
+			save=False,
+		)
+		entry.voucher_type = "Opening Entry"
+		entry.insert()
+		entry.submit()
+
+		filters = frappe._dict(
+			company="_Test Company",
+			from_date="2025-01-01",
+			to_date="2025-06-30",
+			account=["_Test Cash - _TC"],
+			show_opening_entries=True,
+		)
+		self.assertFalse(any(row.get("voucher_no") == entry.name for row in execute(filters)[1]))
+
 	def test_snapshot_reports_use_live_data_for_restricted_users(self):
 		from importlib import import_module
 		from unittest.mock import patch
