@@ -312,6 +312,7 @@ def get_opening_balance(
 				)
 			else:
 				opening_balance = opening_balance.where(closing_balance.posting_date < filters.from_date)
+			opening_balance = opening_balance.where(closing_balance.posting_date <= filters.to_date)
 
 	if doctype == "GL Entry":
 		opening_balance = opening_balance.where(closing_balance.is_cancelled == 0)
@@ -815,8 +816,8 @@ def _get_gl_entry_opening_duckdb(conn, filters, report_type, ignore_is_opening, 
 		if not ignore_is_opening:
 			conditions.append("is_opening = 'No'")
 	elif not ignore_is_opening:
-		conditions.append("(posting_date < ? OR is_opening = 'Yes')")
-		params.append(filters.from_date)
+		conditions.append("(posting_date < ? OR is_opening = 'Yes') AND posting_date <= ?")
+		params.extend([filters.from_date, filters.to_date])
 	else:
 		conditions.append("posting_date < ?")
 		params.append(filters.from_date)

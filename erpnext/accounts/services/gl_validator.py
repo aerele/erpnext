@@ -120,15 +120,14 @@ def check_freezing_date(posting_date, company, adv_adj=False):
 				)
 
 
-def validate_opening_entry_against_pcv(company):
-	if frappe.db.exists("Period Closing Voucher", {"docstatus": 1, "company": company}):
+def validate_opening_entry_against_pcv(company, posting_date):
+	last_pcv_date = frappe.db.get_value(
+		"Period Closing Voucher", {"docstatus": 1, "company": company}, [{"MAX": "period_end_date"}]
+	)
+	if last_pcv_date and getdate(posting_date) <= getdate(last_pcv_date):
 		frappe.throw(
-			_(
-				"A Period Closing Voucher is already submitted and an Opening Entry can no longer be created. {0} to learn more."
-			).format(
-				'<a href="https://docs.frappe.io/erpnext/period-closing-voucher#14-pcv-and-opening-entries" target="_blank" rel="noopener">'
-				+ _("Read the docs")
-				+ "</a>"
+			_("An Opening Entry cannot be created on or before {0}, the end of a closed period.").format(
+				formatdate(last_pcv_date)
 			),
 			title=_("Invalid Opening Entry"),
 		)
@@ -136,7 +135,7 @@ def validate_opening_entry_against_pcv(company):
 
 def validate_against_pcv(is_opening, posting_date, company):
 	if is_opening:
-		validate_opening_entry_against_pcv(company)
+		validate_opening_entry_against_pcv(company, posting_date)
 
 	last_pcv_date = frappe.db.get_value(
 		"Period Closing Voucher", {"docstatus": 1, "company": company}, [{"MAX": "period_end_date"}]

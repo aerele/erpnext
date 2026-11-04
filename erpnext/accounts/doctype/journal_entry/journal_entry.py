@@ -153,7 +153,7 @@ class JournalEntry(AccountsController):
 			self.is_opening = "No"
 
 		if self.is_opening == "Yes":
-			validate_opening_entry_against_pcv(self.company)
+			validate_opening_entry_against_pcv(self.company, self.posting_date)
 
 		self.clearance_date = None
 

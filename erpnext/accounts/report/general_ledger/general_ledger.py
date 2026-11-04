@@ -310,10 +310,7 @@ def get_conditions(filters):
 		else:
 			conditions.append("posting_date >=%(from_date)s")
 
-	if not ignore_is_opening:
-		conditions.append("(posting_date <=%(to_date)s or is_opening = 'Yes')")
-	else:
-		conditions.append("posting_date <=%(to_date)s")
+	conditions.append("posting_date <=%(to_date)s")
 
 	if filters.get("project"):
 		conditions.append("project in %(project)s")
@@ -598,7 +595,7 @@ def get_accountwise_gle(filters, accounting_dimensions, gl_entries, gle_map):
 			update_value_in_dict(totals, "opening", gle, True)
 			update_value_in_dict(totals, "closing", gle, True)
 
-		elif gle.posting_date <= to_date or (cstr(gle.is_opening) == "Yes" and show_opening_entries):
+		elif gle.posting_date <= to_date:
 			if not group_by_voucher_consolidated:
 				update_value_in_dict(gle_map[group_by_value].totals, "total", gle)
 				update_value_in_dict(gle_map[group_by_value].totals, "closing", gle)
@@ -1090,10 +1087,7 @@ def _build_gl_conditions_duckdb(filters):
 			conditions.append("posting_date >= ?")
 		params.append(filters.from_date)
 
-	if not ignore_is_opening:
-		conditions.append("(posting_date <= ? OR is_opening = 'Yes')")
-	else:
-		conditions.append("posting_date <= ?")
+	conditions.append("posting_date <= ?")
 	params.append(filters.to_date)
 
 	if filters.get("project"):

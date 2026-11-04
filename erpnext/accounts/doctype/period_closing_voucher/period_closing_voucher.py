@@ -571,7 +571,7 @@ class PeriodClosingVoucher(AccountsController):
 		)
 
 		if only_opening_entries:
-			query = query.where(gle.is_opening == "Yes")
+			query = query.where((gle.is_opening == "Yes") & (gle.posting_date <= self.period_end_date))
 		else:
 			query = query.where(
 				gle.posting_date.between(self.period_start_date, self.period_end_date)
@@ -804,8 +804,19 @@ class PeriodClosingVoucher(AccountsController):
 		tasks = []
 		if self.is_first_period_closing_voucher():
 			gl = qb.DocType("GL Entry")
-			min = qb.from_(gl).select(Min(gl.posting_date)).run()[0][0]
-			max = qb.from_(gl).select(Max(gl.posting_date)).run()[0][0]
+			min, max = (
+				qb.from_(gl)
+				.select(Min(gl.posting_date), Max(gl.posting_date))
+				.where(
+					(gl.company == self.company)
+					& (gl.is_cancelled == 0)
+					& (gl.is_opening == "Yes")
+					& (gl.posting_date <= self.period_end_date)
+				)
+				.run()[0]
+			)
+			if not min:
+				return tasks
 
 			raw_query = (
 				qb.from_(gl)
