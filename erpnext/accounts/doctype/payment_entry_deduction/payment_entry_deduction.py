@@ -20,6 +20,7 @@ class PaymentEntryDeduction(Document):
 		description: DF.SmallText | None
 		dunning: DF.Link | None
 		is_exchange_gain_loss: DF.Check
+		is_payment_term_discount: DF.Check
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data

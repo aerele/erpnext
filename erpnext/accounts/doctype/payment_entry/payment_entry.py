@@ -1079,7 +1079,9 @@ class PaymentEntry(AccountsController):
 			discount_accounts = {company.default_discount_account, company.round_off_account}
 			discount_accounts.update(row.account_head for row in doc.taxes)
 			for deduction in self.deductions:
-				if deduction.account not in discount_accounts or deduction.name not in remaining_deductions:
+				if (
+					deduction.account not in discount_accounts and not deduction.is_payment_term_discount
+				) or deduction.name not in remaining_deductions:
 					continue
 				amount = min(
 					remaining_deductions[deduction.name],
@@ -3636,6 +3638,7 @@ def set_pending_discount_loss(pe, doc, discount_amount, base_total_discount_loss
 				"cost_center": pe.cost_center
 				or frappe.get_cached_value("Company", pe.company, "cost_center"),
 				"amount": discount_amount * positive_negative,
+				"is_payment_term_discount": 1,
 			},
 		)
 
@@ -3687,6 +3690,7 @@ def add_income_discount_loss(pe, doc, total_discount_percent) -> float:
 			"account": frappe.get_cached_value("Company", pe.company, "default_discount_account"),
 			"cost_center": pe.cost_center or frappe.get_cached_value("Company", pe.company, "cost_center"),
 			"amount": flt(base_loss_on_income, precision) * positive_negative,
+			"is_payment_term_discount": 1,
 		},
 	)
 
@@ -3722,6 +3726,7 @@ def add_tax_discount_loss(pe, doc, total_discount_percentage) -> float:
 				"cost_center": pe.cost_center
 				or frappe.get_cached_value("Company", pe.company, "cost_center"),
 				"amount": flt(loss, precision) * positive_negative,
+				"is_payment_term_discount": 1,
 			},
 		)
 
