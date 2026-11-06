@@ -246,6 +246,7 @@ class Item(Document):
 			self.validate_opening_stock()
 		self.validate_shelf_life()
 		self.check_for_active_boms()
+		self.validate_duplicate_party_items()
 		self.fill_customer_code()
 		self.check_item_tax()
 		self.validate_barcode()
@@ -582,6 +583,25 @@ class Item(Document):
 				frappe.throw(
 					_("Default BOM ({0}) must be active for this item or its template").format(bom_item)
 				)
+
+	def validate_duplicate_party_items(self):
+		for table, fieldname, party_type, table_label in (
+			("supplier_items", "supplier", _("Supplier"), _("Supplier Items")),
+			("customer_items", "customer_name", _("Customer"), _("Customer Items")),
+		):
+			parties = set()
+			for d in self.get(table):
+				party = d.get(fieldname)
+				if not party:
+					continue
+
+				if party in parties:
+					frappe.throw(
+						_("Row #{0}: {1} {2} is already added in {3}").format(
+							d.idx, party_type, frappe.bold(party), table_label
+						)
+					)
+				parties.add(party)
 
 	def fill_customer_code(self):
 		"""
