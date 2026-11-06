@@ -1072,6 +1072,66 @@ class TestPaymentEntry(ERPNextTestSuite):
 		self.assertEqual(invoice.reload().payment_schedule[0].paid_amount, 0)
 		self.assertEqual(request.reload().outstanding_amount, 1000)
 
+	@ERPNextTestSuite.change_settings("Accounts Settings", {"book_tax_discount_loss": 0})
+	def test_payment_term_discount_with_manually_selected_deduction_account(self):
+		frappe.db.set_value("Company", "_Test Company", "default_discount_account", "")
+		create_payment_terms_template_with_discount()
+		create_payment_term("Remaining Balance")
+		template = frappe.copy_doc(frappe.get_doc("Payment Terms Template", "Test Discount Template"))
+		template.template_name = "_Test Discount Template with Manual Account"
+		template.terms[0].invoice_portion = 50
+		template.terms[0].discount_validity = 5
+		template.append(
+			"terms",
+			{
+				"payment_term": "Remaining Balance",
+				"invoice_portion": 50,
+				"credit_days_based_on": "Day(s) after invoice date",
+				"credit_days": 30,
+			},
+		)
+		template.insert()
+
+		invoice = create_sales_invoice(qty=1, rate=1000, do_not_save=True)
+		invoice.payment_terms_template = template.name
+		invoice.submit()
+
+		payment = get_payment_entry("Sales Invoice", invoice.name, bank_account="_Test Cash - _TC")
+		self.assertEqual(payment.paid_amount, 900)
+		self.assertEqual(len(payment.deductions), 1)
+		self.assertTrue(payment.deductions[0].is_payment_term_discount)
+		payment.deductions[0].account = "Write Off - _TC"
+		payment.submit()
+
+		invoice.reload()
+		self.assertEqual(invoice.payment_schedule[0].paid_amount, 400)
+		self.assertEqual(invoice.payment_schedule[0].discounted_amount, 100)
+		self.assertEqual(invoice.payment_schedule[0].outstanding, 0)
+		self.assertEqual(invoice.outstanding_amount, 0)
+
+		gl_entries = frappe.get_all(
+			"GL Entry",
+			filters={"voucher_no": payment.name},
+			fields=["account", "debit", "credit"],
+		)
+		self.assertEqual(
+			{
+				account: (
+					sum(flt(row.debit) for row in gl_entries if row.account == account),
+					sum(flt(row.credit) for row in gl_entries if row.account == account),
+				)
+				for account in {row.account for row in gl_entries}
+			},
+			{"Debtors - _TC": (0, 1000), "_Test Cash - _TC": (900, 0), "Write Off - _TC": (100, 0)},
+		)
+
+		payment.cancel()
+		invoice.reload()
+		self.assertEqual(invoice.payment_schedule[0].paid_amount, 0)
+		self.assertEqual(invoice.payment_schedule[0].discounted_amount, 0)
+		self.assertEqual(invoice.payment_schedule[0].outstanding, 500)
+		self.assertEqual(invoice.outstanding_amount, 1000)
+
 	def test_payment_entry_against_payment_terms_with_discount_on_pi(self):
 		pi = make_purchase_invoice(do_not_save=1)
 		create_payment_terms_template_with_discount()
