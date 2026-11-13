@@ -2868,7 +2868,9 @@ erpnext.TransactionController = class TransactionController extends erpnext.taxe
 
 	set_gross_profit(item) {
 		if (["Sales Order", "Quotation"].includes(this.frm.doc.doctype) && item.valuation_rate) {
-			var rate = flt(item.rate) * flt(this.frm.doc.conversion_rate || 1);
+			var rate =
+				(flt(item.rate) * flt(this.frm.doc.conversion_rate || 1)) /
+				(flt(item.conversion_factor) || 1);
 			item.gross_profit = flt((rate - item.valuation_rate) * item.stock_qty, precision("amount", item));
 		}
 	}
