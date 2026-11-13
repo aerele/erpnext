@@ -26,7 +26,11 @@ from erpnext.stock.doctype.item.item import (
 	validate_is_stock_item,
 )
 from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
-from erpnext.stock.get_item_details import get_item_details, get_item_tax_map, get_item_tax_template
+from erpnext.stock.get_item_details import (
+	get_item_details,
+	get_item_tax_map,
+	get_item_tax_template,
+)
 from erpnext.tests.assertions import assert_raises_with_savepoint
 from erpnext.tests.utils import ERPNextTestSuite
 
@@ -197,6 +201,50 @@ class TestItem(ERPNextTestSuite):
 
 		for key, value in to_check.items():
 			self.assertEqual(value, details.get(key), key)
+
+	def test_get_gross_profit_uses_rate_per_stock_uom(self):
+		item = make_item(
+			"_Test Gross Profit Per Stock UOM",
+			{"is_stock_item": 1, "stock_uom": "Nos", "valuation_rate": 80},
+			uoms=[{"uom": "Box", "conversion_factor": 12}],
+		)
+		warehouse = "_Test Warehouse - _TC"
+		self.make_bin(
+			[
+				{
+					"doctype": "Bin",
+					"item_code": item.name,
+					"warehouse": warehouse,
+					"actual_qty": 12,
+					"valuation_rate": 80,
+				}
+			]
+		)
+		currency = frappe.get_cached_value("Company", "_Test Company", "default_currency")
+
+		details = get_item_details(
+			frappe._dict(
+				{
+					"item_code": item.name,
+					"company": "_Test Company",
+					"price_list": "_Test Price List",
+					"currency": currency,
+					"doctype": "Sales Order",
+					"conversion_rate": 1,
+					"price_list_currency": currency,
+					"plc_conversion_rate": 1,
+					"order_type": "Sales",
+					"customer": "_Test Customer",
+					"warehouse": warehouse,
+					"uom": "Box",
+					"conversion_factor": 12,
+					"qty": 1,
+					"rate": 1200,
+					"ignore_pricing_rule": 1,
+				}
+			)
+		)
+		self.assertEqual(details.gross_profit, 240)
 
 	def test_get_asset_item_details(self):
 		from erpnext.assets.doctype.asset.test_asset import create_fixed_asset_item
