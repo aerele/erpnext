@@ -293,6 +293,7 @@ class StockController(AccountsController):
 		include_bundle=None,
 		exclude_serial_nos=None,
 		total_qty=0,
+		company=None,
 	):
 		from erpnext.stock.services.serial_batch_bundle_service import SerialBatchBundleService
 
@@ -305,6 +306,7 @@ class StockController(AccountsController):
 			include_bundle,
 			exclude_serial_nos,
 			total_qty,
+			company,
 		)
 
 	def get_sl_entries(self, d, args):
@@ -1165,6 +1167,8 @@ def make_bundle_for_material_transfer(**kwargs):
 	bundle_doc = frappe.copy_doc(bundle_doc)
 	bundle_doc.docstatus = 0
 	bundle_doc.warehouse = kwargs.warehouse
+	if kwargs.company:
+		bundle_doc.company = kwargs.company
 	bundle_doc.type_of_transaction = kwargs.type_of_transaction
 	bundle_doc.voucher_type = kwargs.voucher_type
 	bundle_doc.voucher_no = "" if kwargs.is_new or kwargs.docstatus == 2 else kwargs.voucher_no
