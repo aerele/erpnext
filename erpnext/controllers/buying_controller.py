@@ -183,6 +183,66 @@ class BuyingController(SubcontractingController):
 					== 1
 				):
 					frappe.set_value("Serial and Batch Entry", sabe[0], "qty", item.qty)
+		elif self.is_inter_company_stock_receipt():
+			self.create_package_for_inter_company_receipt()
+
+	def is_inter_company_stock_receipt(self) -> bool:
+		"""Purchase Receipt from an internal supplier that represents another company."""
+		return bool(
+			self.doctype == "Purchase Receipt"
+			and not self.get("is_return")
+			and self.get("is_internal_supplier")
+			and self.get("represents_company")
+			and self.represents_company != self.company
+		)
+
+	def create_package_for_inter_company_receipt(self) -> None:
+		"""Receive the batches / serial nos delivered by the other company into this company's warehouse."""
+		ids = [
+			d.delivery_note_item
+			for d in self.get("items")
+			if d.get("delivery_note_item") and not d.serial_and_batch_bundle
+		]
+		if not ids:
+			return
+
+		bundle_ids = dict(
+			frappe.get_all(
+				"Delivery Note Item",
+				filters={"name": ("in", ids), "serial_and_batch_bundle": ("is", "set")},
+				fields=["name", "serial_and_batch_bundle"],
+				as_list=True,
+			)
+		)
+		if not bundle_ids:
+			return
+
+		bundle_qty = dict(
+			frappe.get_all(
+				"Serial and Batch Bundle",
+				filters={"name": ("in", list(bundle_ids.values()))},
+				fields=["name", "total_qty"],
+				as_list=True,
+			)
+		)
+
+		for item in self.get("items"):
+			source_bundle = bundle_ids.get(item.get("delivery_note_item"))
+			if not source_bundle or item.serial_and_batch_bundle or not item.warehouse:
+				continue
+
+			# Only a full receipt is unambiguous about which batches / serial nos arrived.
+			delivered_qty = abs(flt(bundle_qty.get(source_bundle)))
+			if flt(delivered_qty - flt(item.stock_qty), item.precision("stock_qty")):
+				continue
+
+			item.serial_and_batch_bundle = self.make_package_for_transfer(
+				source_bundle,
+				item.warehouse,
+				type_of_transaction="Inward",
+				do_not_submit=True,
+				company=self.company,
+			)
 
 	def get_component_incoming_rates(self) -> dict:
 		packed_items = [

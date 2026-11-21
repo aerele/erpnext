@@ -1440,6 +1440,114 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		self.assertEqual(pr.tax_category or None, supplier.tax_category or None)
 		self.assertEqual(pr.language or None, supplier.language or None)
 
+	def test_inter_company_purchase_receipt_keeps_delivered_batches(self):
+		"""
+		An inter-company Purchase Receipt must receive the batches of the Delivery Note
+		instead of creating a new batch.
+		"""
+		from erpnext.selling.doctype.customer.test_customer import create_internal_customer
+		from erpnext.stock.doctype.delivery_note.delivery_note import make_inter_company_purchase_receipt
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+
+		prepare_data_for_internal_transfer()
+		seller, buyer = "_Test Company with perpetual inventory", "_Test Company"
+		frappe.db.set_value("Price List", "_Test Price List", {"buying": 1, "selling": 1})
+
+		customer = frappe.get_doc(
+			"Customer", create_internal_customer("_Test Inter Company Customer", buyer, seller)
+		)
+		if seller not in [d.company for d in customer.companies]:
+			customer.append("companies", {"company": seller})
+			customer.save()
+
+		supplier = frappe.get_doc("Supplier", "_Test Internal Supplier 2")
+		if buyer not in [d.company for d in supplier.companies]:
+			supplier.append("companies", {"company": buyer})
+			supplier.save()
+
+		item_code = make_item(
+			"_Test Inter Company Batch Item",
+			{
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "TICB-.#####",
+			},
+		).name
+
+		batches = []
+		for _ in range(2):
+			se = make_stock_entry(
+				item_code=item_code, qty=5, to_warehouse="Stores - TCP1", company=seller, basic_rate=100
+			)
+			batches.append(get_batch_from_bundle(se.items[0].serial_and_batch_bundle))
+
+		dn = create_delivery_note(
+			item_code=item_code,
+			company=seller,
+			customer=customer.name,
+			warehouse="Stores - TCP1",
+			qty=6,
+			rate=100,
+			cost_center="Main - TCP1",
+			expense_account="Cost of Goods Sold - TCP1",
+			batch_no=batches[0],
+			batches={batches[0]: 3, batches[1]: 3},
+			do_not_submit=True,
+		)
+		dn.selling_price_list = "_Test Price List"
+		dn.submit()
+
+		pr = make_inter_company_purchase_receipt(dn.name)
+		self.assertEqual(pr.company, buyer)
+		pr.items[0].warehouse = "Stores - _TC"
+		pr.submit()
+
+		bundle = frappe.get_doc("Serial and Batch Bundle", pr.items[0].serial_and_batch_bundle)
+		self.assertEqual(bundle.company, buyer)
+		self.assertEqual(bundle.type_of_transaction, "Inward")
+		self.assertEqual(bundle.warehouse, "Stores - _TC")
+		self.assertEqual({d.batch_no: d.qty for d in bundle.entries}, {batches[0]: 3, batches[1]: 3})
+
+		sle = frappe.get_all(
+			"Stock Ledger Entry",
+			filters={"voucher_no": pr.name, "is_cancelled": 0},
+			fields=["warehouse", "actual_qty", "serial_and_batch_bundle"],
+		)
+		self.assertEqual(len(sle), 1)
+		self.assertEqual((sle[0].warehouse, sle[0].actual_qty), ("Stores - _TC", 6))
+		self.assertEqual(sle[0].serial_and_batch_bundle, bundle.name)
+		self.assertFalse(frappe.db.exists("Batch", {"item": item_code, "name": ("not in", batches)}))
+
+		# A partial receipt is ambiguous about which batches arrived, so it must still submit as before.
+		dn = create_delivery_note(
+			item_code=item_code,
+			company=seller,
+			customer=customer.name,
+			warehouse="Stores - TCP1",
+			qty=4,
+			rate=100,
+			cost_center="Main - TCP1",
+			expense_account="Cost of Goods Sold - TCP1",
+			batch_no=batches[0],
+			batches={batches[0]: 2, batches[1]: 2},
+			do_not_submit=True,
+		)
+		dn.selling_price_list = "_Test Price List"
+		dn.submit()
+
+		pr = make_inter_company_purchase_receipt(dn.name)
+		pr.items[0].warehouse = "Stores - _TC"
+		pr.items[0].qty = 3
+		pr.submit()
+		self.assertEqual(
+			frappe.db.get_value(
+				"Stock Ledger Entry", {"voucher_no": pr.name, "is_cancelled": 0}, "actual_qty"
+			),
+			3,
+		)
+
 	def test_lcv_for_internal_transfer(self):
 		from erpnext.stock.doctype.delivery_note.delivery_note import make_inter_company_purchase_receipt
 		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
