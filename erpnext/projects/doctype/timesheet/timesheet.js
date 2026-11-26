@@ -268,6 +268,7 @@ frappe.ui.form.on("Timesheet", {
 								row.costing_rate = r.message["costing_rate"];
 								frm.refresh_fields("time_logs");
 								calculate_billing_costing_amount(frm, row.doctype, row.name);
+								calculate_time_and_amount(frm);
 							}
 						},
 					});
