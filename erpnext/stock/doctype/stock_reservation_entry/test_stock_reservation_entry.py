@@ -1758,6 +1758,115 @@ class TestStockReservationEntry(ERPNextTestSuite):
 		# Test - 1: ValidationError should be thrown as the inwarded stock is reserved.
 		self.assertRaises(frappe.ValidationError, se.cancel)
 
+	def make_sales_order_with_drop_ship_item(self, reserve_stock: int = 1):
+		"""Sales Order with an in-stock Drop Ship item in row 1 and an in-stock normal item in row 2."""
+
+		items = create_items("stock", "stock")
+		create_material_receipt(items=items, warehouse=self.warehouse, qty=100)
+		drop_ship_item, normal_item = items
+
+		so = make_sales_order(
+			item_list=[
+				{
+					"item_code": drop_ship_item,
+					"warehouse": self.warehouse,
+					"qty": 10,
+					"rate": 100,
+					"delivered_by_supplier": 1,
+					"supplier": "_Test Supplier",
+				},
+				{"item_code": normal_item, "warehouse": self.warehouse, "qty": 10, "rate": 100},
+			],
+			do_not_save=True,
+		)
+		so.reserve_stock = reserve_stock
+		for item in so.items:
+			item.reserve_stock = 1
+
+		return so
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings", {"enable_stock_reservation": 1, "allow_negative_stock": 0}
+	)
+	def test_drop_ship_item_is_not_reserved(self) -> None:
+		so = self.make_sales_order_with_drop_ship_item()
+		frappe.clear_messages()
+		so.save()
+
+		# Reserve Stock is unchecked only on the Drop Ship row, and the user is told why.
+		self.assertEqual(so.items[0].reserve_stock, 0)
+		self.assertEqual(so.items[1].reserve_stock, 1)
+		self.assertTrue(
+			any("Drop Ship" in (msg.get("message") or "") for msg in frappe.message_log),
+			"A message must be shown when Reserve Stock is unchecked on a Drop Ship item",
+		)
+
+		so.submit()
+
+		reserved = get_sre_reserved_qty_details_for_voucher("Sales Order", so.name)
+		self.assertNotIn(so.items[0].name, reserved)
+		self.assertEqual(reserved.get(so.items[1].name), 10)
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings", {"enable_stock_reservation": 1, "allow_negative_stock": 0}
+	)
+	def test_drop_ship_item_is_not_reserved_without_message_when_reserve_stock_is_unchecked(self) -> None:
+		so = self.make_sales_order_with_drop_ship_item(reserve_stock=0)
+		frappe.clear_messages()
+		so.save()
+
+		# The row default is cleared silently as the user didn't ask to reserve stock.
+		self.assertEqual(so.items[0].reserve_stock, 0)
+		self.assertFalse(any("Drop Ship" in (msg.get("message") or "") for msg in frappe.message_log))
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings", {"enable_stock_reservation": 1, "allow_negative_stock": 0}
+	)
+	def test_drop_ship_item_is_skipped_when_reserving_after_submit(self) -> None:
+		so = self.make_sales_order_with_drop_ship_item(reserve_stock=0)
+		so.save()
+		so.submit()
+
+		# Simulate a Drop Ship row that still has Reserve Stock checked (e.g. set via API / db).
+		so.items[0].db_set("reserve_stock", 1)
+		so.reload()
+		so.create_stock_reservation_entries()
+		so.reload()
+
+		reserved = get_sre_reserved_qty_details_for_voucher("Sales Order", so.name)
+		self.assertNotIn(so.items[0].name, reserved)
+		self.assertEqual(reserved.get(so.items[1].name), 10)
+		self.assertEqual(so.items[0].reserve_stock, 0)
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings", {"enable_stock_reservation": 1, "allow_negative_stock": 0}
+	)
+	def test_drop_ship_product_bundle_components_are_not_reserved(self) -> None:
+		from erpnext.stock.doctype.packed_item.test_packed_item import create_product_bundle
+
+		bundle, _components = create_product_bundle(quantities=[2, 3], warehouse=self.warehouse)
+		so = make_sales_order(
+			item_list=[
+				{
+					"item_code": bundle,
+					"warehouse": self.warehouse,
+					"qty": 2,
+					"rate": 100,
+					"delivered_by_supplier": 1,
+					"supplier": "_Test Supplier",
+				}
+			],
+			do_not_save=True,
+		)
+		so.reserve_stock = 1
+		so.save()
+
+		self.assertTrue(so.packed_items)
+		self.assertFalse(any(row.reserve_stock for row in so.packed_items))
+
+		so.submit()
+		self.assertFalse(get_sre_reserved_qty_details_for_voucher("Sales Order", so.name))
+
 
 SR_ITEM_PROPERTIES = {
 	"stock": {"is_stock_item": 1, "valuation_rate": 100},
