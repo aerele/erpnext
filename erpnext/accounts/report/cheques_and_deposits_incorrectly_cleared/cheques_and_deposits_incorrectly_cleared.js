@@ -12,6 +12,12 @@ frappe.query_reports["Cheques and Deposits Incorrectly cleared"] = {
 			default: frappe.defaults.get_user_default("Company"),
 		},
 		{
+			fieldname: "finance_book",
+			label: __("Finance Book"),
+			fieldtype: "Link",
+			options: "Finance Book",
+		},
+		{
 			fieldname: "account",
 			label: __("Bank Account"),
 			fieldtype: "Link",

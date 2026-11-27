@@ -9,6 +9,7 @@ from frappe.utils import flt
 
 from erpnext.accounts.report.bank_reconciliation_statement.bank_reconciliation_statement import (
 	get_amount_in_bank_currency,
+	get_finance_book_condition,
 )
 
 
@@ -56,7 +57,7 @@ def get_amounts_not_reflected_in_system_for_bank_reconciliation_statement(filter
 		.where(
 			je.docstatus.eq(1)
 			& jea.account.eq(filters.account)
-			& (je.finance_book.isnull() | je.finance_book.eq(""))
+			& get_finance_book_condition(je, filters)
 			& je.posting_date.gt(filters.report_date)
 			& je.clearance_date.lte(filters.report_date)
 			& (je.is_opening.isnull() | je.is_opening.eq("No"))

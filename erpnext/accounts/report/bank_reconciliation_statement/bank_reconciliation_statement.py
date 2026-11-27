@@ -27,7 +27,10 @@ def execute(filters=None):
 	data = get_entries(filters)
 
 	balance_as_per_system = get_balance_on(
-		filters["account"], filters["report_date"], company=filters["company"]
+		filters["account"],
+		filters["report_date"],
+		company=filters["company"],
+		finance_book=filters.get("finance_book"),
 	)
 
 	total_debit, total_credit = 0, 0
@@ -164,7 +167,7 @@ def get_journal_entries(filters):
 			& (je.posting_date <= filters.report_date)
 			& (je.clearance_date.isnull() | (je.clearance_date > filters.report_date))
 			& (je.company == filters.company)
-			& (je.finance_book.isnull() | (je.finance_book == ""))
+			& get_finance_book_condition(je, filters)
 			& ((je.is_opening.isnull()) | (je.is_opening == "No"))
 		)
 		.orderby(je.posting_date)
@@ -300,7 +303,7 @@ def get_amounts_not_reflected_in_system_for_bank_reconciliation_statement(filter
 			& (je.posting_date > filters.report_date)
 			& (je.clearance_date <= filters.report_date)
 			& (je.company == filters.company)
-			& (je.finance_book.isnull() | (je.finance_book == ""))
+			& get_finance_book_condition(je, filters)
 			& ((je.is_opening.isnull()) | (je.is_opening == "No"))
 		)
 		.run(as_dict=True)
@@ -347,6 +350,14 @@ def get_amounts_not_reflected_in_system_for_bank_reconciliation_statement(filter
 	pi_amount = flt(pi_amount[0].amount) if pi_amount else 0.0
 
 	return je_amount + pe_amount + pi_amount
+
+
+def get_finance_book_condition(je, filters):
+	"""Entries without a finance book, plus the selected book, as in the General Ledger."""
+	condition = je.finance_book.isnull() | (je.finance_book == "")
+	if filters.get("finance_book"):
+		condition |= je.finance_book == filters.get("finance_book")
+	return condition
 
 
 def get_amount_in_bank_currency(filters: dict, amount: Field, base_amount: Field) -> Field:

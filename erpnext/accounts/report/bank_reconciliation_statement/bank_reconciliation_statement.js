@@ -12,6 +12,12 @@ frappe.query_reports["Bank Reconciliation Statement"] = {
 			default: frappe.defaults.get_user_default("Company"),
 		},
 		{
+			fieldname: "finance_book",
+			label: __("Finance Book"),
+			fieldtype: "Link",
+			options: "Finance Book",
+		},
+		{
 			fieldname: "account",
 			label: __("Bank Account"),
 			fieldtype: "Link",
@@ -56,6 +62,7 @@ frappe.query_reports["Bank Reconciliation Statement"] = {
 	open_utility_report: function () {
 		frappe.route_options = {
 			company: frappe.query_report.get_filter_value("company"),
+			finance_book: frappe.query_report.get_filter_value("finance_book"),
 			account: frappe.query_report.get_filter_value("account"),
 			report_date: frappe.query_report.get_filter_value("report_date"),
 		};

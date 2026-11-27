@@ -75,6 +75,54 @@ class TestBankReconciliationStatement(ERPNextTestSuite):
 				filters = frappe._dict(company="_Test Company", account=self.bank, report_date="2025-09-08")
 				self.assertCountEqual([row.payment_entry for row in build_data(filters)], incorrectly_cleared)
 
+	def test_finance_book_filter_includes_selected_book(self):
+		from erpnext.accounts.report.cheques_and_deposits_incorrectly_cleared.cheques_and_deposits_incorrectly_cleared import (
+			build_data,
+		)
+
+		books = [
+			frappe.get_doc(doctype="Finance Book", finance_book_name=name).insert().name
+			for name in ("_Test BRS Filter Default Book", "_Test BRS Filter Other Book")
+		]
+		frappe.db.set_value("Company", "_Test Company", "default_finance_book", books[0])
+		opening = make_journal_entry(self.bank, "Cash - _TC", 1000, posting_date="2025-09-01", submit=True)
+		self.clear(opening, "2025-09-01")
+
+		incorrectly_cleared = {}
+		for book in books:
+			for posting_date, amount, clearance_date in (
+				("2025-09-05", -10, None),
+				("2025-09-10", -5, "2025-09-05"),
+			):
+				journal = make_journal_entry(
+					self.bank, "Cash - _TC", amount, posting_date=posting_date, save=False
+				)
+				journal.finance_book = book
+				journal.submit()
+				frappe.db.set_value("Journal Entry", journal.name, "finance_book", book)
+				if clearance_date:
+					self.clear(journal, clearance_date)
+					incorrectly_cleared[book] = journal.name
+
+		for book in books:
+			with self.subTest(finance_book=book):
+				rows = self.get_summary_rows("2025-09-08", finance_book=book)
+				self.assertEqual(rows["Bank Statement balance as per General Ledger"].debit, 990)
+				self.assertEqual(rows["Outstanding Cheques and Deposits to clear"].credit, 10)
+				self.assertEqual(rows["Cheques and Deposits incorrectly cleared"].credit, 5)
+				self.assertEqual(rows["Calculated Bank Statement balance"].debit, 995)
+				filters = frappe._dict(
+					company="_Test Company", account=self.bank, report_date="2025-09-08", finance_book=book
+				)
+				self.assertEqual(
+					[row.payment_entry for row in build_data(filters)], [incorrectly_cleared[book]]
+				)
+
+		with self.subTest(finance_book=None):
+			rows = self.get_summary_rows("2025-09-08")
+			self.assertEqual(rows["Bank Statement balance as per General Ledger"].debit, 1000)
+			self.assertEqual(rows["Calculated Bank Statement balance"].debit, 1000)
+
 	def test_vouchers_cleared_before_posting_date_are_signed(self):
 		opening = make_journal_entry(self.bank, "Cash - _TC", 10000, posting_date="2025-09-01", submit=True)
 		self.clear(opening, "2025-09-01")
