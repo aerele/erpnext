@@ -5490,6 +5490,211 @@ class TestWorkOrder(ERPNextTestSuite):
 		finally:
 			frappe.db.set_single_value("Stock Settings", "enable_stock_reservation", 0)
 
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_bundle_item_work_order_reserves_finished_good_against_packed_item(self):
+		fg_item = make_bundle_fg_items(1, rm_qty=10)[0]
+		so = make_bundle_sales_order([fg_item], qty=10)
+		wo = make_wo_order_test_record(
+			production_item=fg_item,
+			qty=10,
+			sales_order=so.name,
+			reserve_stock=1,
+			source_warehouse="_Test Warehouse - _TC",
+			wip_warehouse="_Test Warehouse 1 - _TC",
+			fg_warehouse="_Test Warehouse - _TC",
+		)
+		frappe.get_doc(make_stock_entry(wo.name, "Material Transfer for Manufacture", 10)).submit()
+		manufacture = frappe.get_doc(make_stock_entry(wo.name, "Manufacture", 10))
+		manufacture.submit()
+
+		self.assertEqual(
+			get_sales_order_reservations(so.name), [(so.packed_items[0].name, "_Test Warehouse - _TC", 10)]
+		)
+
+		manufacture.cancel()
+		self.assertEqual(get_sales_order_reservations(so.name), [])
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_sales_order_work_order_rejects_other_target_warehouse(self):
+		fg_item, second_fg_item = make_bundle_fg_items(2)
+		bundle_so = make_bundle_sales_order([fg_item], qty=10)
+		so = make_sales_order(item_code=second_fg_item, warehouse="_Test Warehouse - _TC", qty=10)
+
+		for sales_order, item_code in ((bundle_so, fg_item), (so, second_fg_item)):
+			work_order = make_wo_order_test_record(
+				production_item=item_code,
+				qty=10,
+				sales_order=sales_order.name,
+				reserve_stock=1,
+				fg_warehouse="_Test Warehouse 2 - _TC",
+				do_not_save=True,
+			)
+			self.assertRaisesRegex(frappe.ValidationError, "is not allowed for Sales Order", work_order.save)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_bundle_item_work_order_reserves_only_unreserved_qty(self):
+		from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
+
+		fg_item = make_bundle_fg_items(1, rm_qty=10)[0]
+		test_stock_entry.make_stock_entry(
+			item_code=fg_item, target="_Test Warehouse - _TC", qty=4, basic_rate=100
+		)
+		so = make_bundle_sales_order([fg_item], qty=10)
+		so.create_stock_reservation_entries(
+			items_details=[
+				{
+					"sales_order_item": so.packed_items[0].name,
+					"item_code": fg_item,
+					"warehouse": "_Test Warehouse - _TC",
+					"qty_to_reserve": 4,
+				}
+			],
+			notify=False,
+		)
+
+		wo = make_wo_order_test_record(
+			production_item=fg_item,
+			qty=10,
+			sales_order=so.name,
+			reserve_stock=1,
+			source_warehouse="_Test Warehouse - _TC",
+			wip_warehouse="_Test Warehouse 1 - _TC",
+			fg_warehouse="_Test Warehouse - _TC",
+		)
+		frappe.get_doc(make_stock_entry(wo.name, "Material Transfer for Manufacture", 10)).submit()
+		manufacture = frappe.get_doc(make_stock_entry(wo.name, "Manufacture", 10))
+		manufacture.submit()
+
+		self.assertEqual(
+			frappe.db.get_value(
+				"Stock Reservation Entry",
+				{"from_voucher_no": manufacture.name, "docstatus": 1},
+				"reserved_qty",
+			),
+			6,
+		)
+
+		make_delivery_note(so.name).submit()
+		delivered_qty = frappe.get_all(
+			"Stock Reservation Entry", {"voucher_no": so.name, "docstatus": 1}, pluck="delivered_qty"
+		)
+		self.assertEqual(sum(delivered_qty), 10)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_sales_order_work_orders_reserve_against_their_own_row(self):
+		from erpnext.selling.doctype.sales_order.mapper import make_work_orders
+		from erpnext.selling.doctype.sales_order.sales_order import get_work_order_items
+
+		fg_item = make_bundle_fg_items(1, rm_qty=10)[0]
+		so = make_bundle_sales_order([fg_item], qty=5, fg_item_qty=5)
+		items = frappe.as_json({"items": get_work_order_items(so.name)})
+		manufacture_work_orders(reversed(make_work_orders(items, so.name, so.company)))
+
+		self.assertCountEqual(
+			get_sales_order_reservations(so.name),
+			[
+				(so.items[0].name, "_Test Warehouse - _TC", 5),
+				(so.packed_items[0].name, "_Test Warehouse - _TC", 5),
+			],
+		)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_production_plan_work_orders_reserve_against_their_own_row(self):
+		fg_item = make_bundle_fg_items(1, rm_qty=10)[0]
+		so = make_bundle_sales_order([fg_item], qty=5, fg_item_qty=5)
+		plan = create_production_plan(
+			get_items_from="Sales Order", sales_order=so, skip_getting_mr_items=True
+		)
+		plan.make_work_order()
+		manufacture_work_orders(frappe.get_all("Work Order", {"production_plan": plan.name}, pluck="name"))
+
+		self.assertCountEqual(
+			get_sales_order_reservations(so.name),
+			[
+				(so.items[0].name, "_Test Warehouse - _TC", 5),
+				(so.packed_items[0].name, "_Test Warehouse - _TC", 5),
+			],
+		)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_bundle_items_use_their_own_packed_item_warehouse(self):
+		from erpnext.selling.doctype.sales_order.mapper import make_work_orders
+		from erpnext.selling.doctype.sales_order.sales_order import get_work_order_items
+
+		fg_item, second_fg_item = make_bundle_fg_items(2, rm_qty=15)
+		so = make_bundle_sales_order(
+			[fg_item, second_fg_item],
+			qty=5,
+			fg_item_qty=5,
+			packed_item_warehouses={fg_item: "_Test Warehouse 2 - _TC"},
+		)
+		packed_items = {row.item_code: row.name for row in so.packed_items}
+
+		for item_code, sales_order_item, fg_warehouse in (
+			(fg_item, so.items[0].name, "_Test Warehouse 2 - _TC"),
+			(fg_item, packed_items[fg_item], "_Test Warehouse - _TC"),
+			(second_fg_item, packed_items[second_fg_item], "_Test Warehouse 2 - _TC"),
+			(fg_item, so.items[1].name, "_Test Warehouse - _TC"),
+			(second_fg_item, so.items[1].name, "_Test Warehouse 2 - _TC"),
+		):
+			work_order = make_wo_order_test_record(
+				production_item=item_code,
+				qty=1,
+				sales_order=so.name,
+				reserve_stock=1,
+				fg_warehouse=fg_warehouse,
+				do_not_save=True,
+			)
+			work_order.sales_order_item = sales_order_item
+			self.assertRaisesRegex(frappe.ValidationError, "is not allowed for Sales Order", work_order.save)
+
+		items = frappe.as_json({"items": get_work_order_items(so.name)})
+		manufacture_work_orders(make_work_orders(items, so.name, so.company))
+
+		self.assertCountEqual(
+			get_sales_order_reservations(so.name),
+			[
+				(so.items[0].name, "_Test Warehouse - _TC", 5),
+				(packed_items[fg_item], "_Test Warehouse 2 - _TC", 5),
+				(packed_items[second_fg_item], "_Test Warehouse - _TC", 5),
+			],
+		)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": 1})
+	def test_service_bundle_of_manufactured_items_reserves_every_row(self):
+		from erpnext.selling.doctype.product_bundle.test_product_bundle import make_product_bundle
+		from erpnext.selling.doctype.sales_order.mapper import make_delivery_note, make_work_orders
+		from erpnext.selling.doctype.sales_order.sales_order import get_work_order_items
+
+		fg_item, first_component, second_component = make_bundle_fg_items(3, rm_qty=14)
+		service_item = make_item(properties={"is_stock_item": 0}).name
+		make_product_bundle(service_item, [first_component, second_component], qty=2)
+		so = make_sales_order(
+			item_list=[
+				{"item_code": fg_item, "qty": 4, "rate": 100, "warehouse": "_Test Warehouse - _TC"},
+				{"item_code": service_item, "qty": 2, "rate": 500, "warehouse": "_Test Warehouse - _TC"},
+			]
+		)
+		packed_items = {row.item_code: row.name for row in so.packed_items}
+
+		items = frappe.as_json({"items": get_work_order_items(so.name)})
+		manufacture_work_orders(make_work_orders(items, so.name, so.company))
+
+		self.assertCountEqual(
+			get_sales_order_reservations(so.name),
+			[
+				(so.items[0].name, "_Test Warehouse - _TC", 4),
+				(packed_items[first_component], "_Test Warehouse - _TC", 4),
+				(packed_items[second_component], "_Test Warehouse - _TC", 4),
+			],
+		)
+
+		make_delivery_note(so.name).submit()
+		delivered_qty = frappe.get_all(
+			"Stock Reservation Entry", {"voucher_no": so.name, "docstatus": 1}, pluck="delivered_qty"
+		)
+		self.assertEqual(sum(delivered_qty), 12)
+
 	@ERPNextTestSuite.change_settings(
 		"Stock Settings", {"enable_stock_reservation": 1, "allow_negative_stock": 0}
 	)
@@ -9893,6 +10098,65 @@ def make_review_work_order(fg_item, bom_no, qty, submit=True, **kwargs):
 	if submit:
 		wo.submit()
 	return wo
+
+
+def make_bundle_fg_items(count, rm_qty=0):
+	rm_item = make_item(properties={"is_stock_item": 1, "valuation_rate": 100}).name
+	if rm_qty:
+		test_stock_entry.make_stock_entry(
+			item_code=rm_item, target="_Test Warehouse - _TC", qty=rm_qty, basic_rate=100
+		)
+
+	fg_items = [make_item(properties={"is_stock_item": 1}).name for _i in range(count)]
+	for fg_item in fg_items:
+		make_review_bom(fg_item, [{"item_code": rm_item, "qty": 1}])
+	return fg_items
+
+
+def make_bundle_sales_order(fg_items, qty, fg_item_qty=0, packed_item_warehouses=None):
+	from erpnext.selling.doctype.product_bundle.test_product_bundle import make_product_bundle
+
+	bundle_item = make_item(properties={"is_stock_item": 0}).name
+	make_product_bundle(bundle_item, fg_items)
+
+	items = [{"item_code": bundle_item, "qty": qty, "rate": 500, "warehouse": "_Test Warehouse - _TC"}]
+	if fg_item_qty:
+		items.insert(
+			0,
+			{"item_code": fg_items[0], "qty": fg_item_qty, "rate": 100, "warehouse": "_Test Warehouse - _TC"},
+		)
+
+	so = make_sales_order(item_list=items, do_not_submit=True)
+	for row in so.packed_items:
+		row.warehouse = (packed_item_warehouses or {}).get(row.item_code, row.warehouse)
+	so.save()
+	so.submit()
+	return so
+
+
+def manufacture_work_orders(work_orders):
+	for name in work_orders:
+		wo = frappe.get_doc("Work Order", name)
+		wo.reserve_stock = 1
+		wo.wip_warehouse = "_Test Warehouse 1 - _TC"
+		for row in wo.required_items:
+			row.source_warehouse = "_Test Warehouse - _TC"
+		wo.submit()
+
+		frappe.get_doc(make_stock_entry(wo.name, "Material Transfer for Manufacture", wo.qty)).submit()
+		frappe.get_doc(make_stock_entry(wo.name, "Manufacture", wo.qty)).submit()
+
+
+def get_sales_order_reservations(sales_order):
+	return [
+		tuple(row)
+		for row in frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": sales_order, "docstatus": 1},
+			fields=["voucher_detail_no", "warehouse", "reserved_qty"],
+			as_list=True,
+		)
+	]
 
 
 def complete_review_job_card(work_order, qty, hours_ago=2):
