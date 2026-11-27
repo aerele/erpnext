@@ -359,7 +359,12 @@ def add_packed_item_row(
 	pi_row.set(get_packed_item_link_field(doc), linked_packed_item)
 
 	# a component added to a saved order (later save or Update Items) is reserved like a new order's
-	if doc.get("reserve_stock") and (doc.is_new() or not exists):
+	# a Drop Ship bundle is delivered by the supplier, so its components are never reserved
+	if (
+		doc.get("reserve_stock")
+		and not main_item_row.get("delivered_by_supplier")
+		and (doc.is_new() or not exists)
+	):
 		pi_row.reserve_stock = 1
 
 	return pi_row

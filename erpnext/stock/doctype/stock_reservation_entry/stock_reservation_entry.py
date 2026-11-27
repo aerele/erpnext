@@ -1943,6 +1943,18 @@ def create_stock_reservation_entries_for_so_items(
 		if not item.get("reserve_stock"):
 			continue
 
+		# Skip if Drop Ship Item, it is delivered directly by the supplier.
+		if cint(item.get("delivered_by_supplier")):
+			frappe.msgprint(
+				_("Row #{0}: Stock cannot be reserved for Drop Ship Item {1}").format(
+					item.idx, frappe.bold(item.item_code)
+				),
+				title=_("Stock Reservation"),
+				indicator="yellow",
+			)
+			item.db_set("reserve_stock", 0)
+			continue
+
 		# Stock should be reserved from the Pick List while it has undelivered Picked Qty.
 		if flt(undelivered_picked_qty.get(item.name), item.precision("picked_qty")) > 0:
 			frappe.throw(

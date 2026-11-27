@@ -21,14 +21,37 @@ class SalesOrderStockReservation:
 		self.doc = doc
 
 	def validate_reserved_stock(self) -> None:
-		"""Uncheck Reserve Stock when stock reservation is disabled, and on non-stock items."""
+		"""Uncheck Reserve Stock when stock reservation is disabled, on non-stock and Drop Ship items."""
 
 		clear_reserve_stock_if_disabled(self.doc)
 		enable_stock_reservation = frappe.get_single_value("Stock Settings", "enable_stock_reservation")
 
+		drop_ship_rows = []
 		for item in self.doc.items:
-			if item.reserve_stock and (not enable_stock_reservation or not cint(item.is_stock_item)):
+			if not item.reserve_stock:
+				continue
+
+			if not enable_stock_reservation or not cint(item.is_stock_item):
 				item.reserve_stock = 0
+			elif cint(item.delivered_by_supplier):
+				# Drop Ship items are delivered directly by the supplier, nothing to reserve in-house.
+				item.reserve_stock = 0
+				drop_ship_rows.append(_("Row #{0}: {1}").format(item.idx, frappe.bold(item.item_code)))
+
+		# Components of a Drop Ship bundle kept from an earlier save must not stay reserved either.
+		drop_ship_row_names = {item.name for item in self.doc.items if cint(item.delivered_by_supplier)}
+		for packed_item in self.doc.get("packed_items"):
+			if packed_item.parent_detail_docname in drop_ship_row_names:
+				packed_item.reserve_stock = 0
+
+		if drop_ship_rows and self.doc.reserve_stock:
+			frappe.msgprint(
+				_("Stock cannot be reserved for Drop Ship items, Reserve Stock has been unchecked for:")
+				+ "<br>"
+				+ "<br>".join(drop_ship_rows),
+				title=_("Stock Reservation"),
+				indicator="orange",
+			)
 
 	def enable_auto_reserve_stock(self) -> None:
 		if self.doc.is_new() and frappe.get_single_value("Stock Settings", "auto_reserve_stock"):
