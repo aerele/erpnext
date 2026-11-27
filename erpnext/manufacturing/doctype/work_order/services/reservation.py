@@ -21,9 +21,11 @@ from pypika import functions as fn
 from pypika.terms import ExistsCriterion
 
 from erpnext.manufacturing.doctype.production_plan.services.reservation import hand_off_reserved_stock
+from erpnext.selling.doctype.sales_order.services.reservation import get_unreserved_qty
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	StockReservation,
 	clear_reserve_stock_if_disabled,
+	get_sre_reserved_qty_details_for_voucher,
 )
 
 _SCIO_FIELDS = [
@@ -45,6 +47,15 @@ _SO_FIELDS = [
 	"parent as voucher_no",
 	"parenttype as voucher_type",
 	"delivered_qty",
+]
+_PACKED_ITEM_FIELDS = [
+	"item_code",
+	"name",
+	"qty",
+	"warehouse",
+	"parent_detail_docname",
+	"parent as voucher_no",
+	"parenttype as voucher_type",
 ]
 _SERIAL_BATCH_FIELDS = [
 	"`tabSerial and Batch Entry`.`serial_no`",
@@ -70,12 +81,8 @@ class WorkOrderStockReservation:
 		):
 			return
 
-		warehouses = frappe.get_all(
-			"Sales Order Item",
-			filters={"parent": self.doc.sales_order, "item_code": self.doc.production_item},
-			pluck="warehouse",
-		)
-		if self.doc.fg_warehouse not in warehouses:
+		warehouses = [d.warehouse for d in self.get_so_details()]
+		if warehouses and self.doc.fg_warehouse not in warehouses:
 			self._throw_warehouse_not_allowed(warehouses)
 
 	def _throw_warehouse_not_allowed(self, warehouses):
@@ -440,11 +447,34 @@ class WorkOrderStockReservation:
 		)
 
 	def get_so_details(self):
-		return frappe.get_all(
+		filters = {"parent": self.doc.sales_order, "item_code": self.doc.production_item, "docstatus": 1}
+		row = self.doc.sales_order_item
+		so_items = frappe.get_all(
 			"Sales Order Item",
-			filters={"parent": self.doc.sales_order, "item_code": self.doc.production_item, "docstatus": 1},
+			filters={**filters, "name": row} if row else filters,
 			fields=_SO_FIELDS,
+			order_by="idx",
 		)
+		return so_items or self.get_packed_item_details(filters, row)
+
+	def get_packed_item_details(self, filters, row):
+		packed_items = frappe.get_all(
+			"Packed Item",
+			filters={**filters, "parenttype": "Sales Order"},
+			or_filters={"name": row, "parent_detail_docname": row} if row else None,
+			fields=_PACKED_ITEM_FIELDS,
+			order_by="idx",
+		)
+		if not packed_items:
+			return packed_items
+
+		reserved = get_sre_reserved_qty_details_for_voucher("Sales Order", self.doc.sales_order)
+		for row in packed_items:
+			unreserved = get_unreserved_qty(row, reserved)
+			row.stock_qty = row.qty
+			row.stock_reserved_qty = flt(reserved.get(row.name))
+			row.delivered_qty = row.qty - unreserved - row.stock_reserved_qty
+		return packed_items
 
 	def get_voucher_details(self, stock_entry):
 		if stock_entry.purpose == "Manufacture" and self.doc.sales_order:
