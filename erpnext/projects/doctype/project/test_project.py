@@ -557,6 +557,33 @@ class TestProject(ERPNextTestSuite):
 			self.assertEqual(project.percent_complete, 100)
 			self.assertEqual(project.status, "Completed")
 
+	def test_unfinished_task_does_not_round_project_to_completed(self):
+		project, tasks = self._project_with_tasks("Task Progress", 3)
+		frappe.db.set_value("Task", tasks[0], "status", "Completed")
+		frappe.db.set_value("Task", tasks[1], "status", "Completed")
+		frappe.db.set_value("Task", tasks[2], {"status": "Working", "progress": 99.99})
+		project.update_percent_complete()
+		self.assertEqual(project.percent_complete, 99.99)  # 99.9967 is not rounded up to 100
+		self.assertEqual(project.status, "Open")
+
+		project, tasks = self._project_with_tasks("Task Weight", 2)
+		frappe.db.set_value("Task", tasks[0], {"status": "Completed", "task_weight": 1000})
+		frappe.db.set_value("Task", tasks[1], {"status": "Working", "progress": 50, "task_weight": 0.01})
+		project.update_percent_complete()
+		self.assertEqual(project.percent_complete, 99.99)  # 99.9995
+		self.assertEqual(project.status, "Open")
+
+		# 99.9999999 even at six decimals, but the small task is still Working
+		frappe.db.set_value("Task", tasks[1], "progress", 99.99)
+		project.update_percent_complete()
+		self.assertEqual(project.percent_complete, 99.99)
+		self.assertEqual(project.status, "Open")
+
+		frappe.db.set_value("Task", tasks[1], "status", "Completed")
+		project.update_percent_complete()
+		self.assertEqual(project.percent_complete, 100)
+		self.assertEqual(project.status, "Completed")
+
 	def test_tasks_tab_sorts_priority_and_status_by_their_options(self):
 		from erpnext.projects.doctype.project.project import get_project_tasks
 
