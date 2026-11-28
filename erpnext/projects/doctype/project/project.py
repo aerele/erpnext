@@ -322,10 +322,13 @@ class Project(Document):
 				completed = frappe.db.count(
 					"Task", {"project": self.name, "status": ["in", ["Cancelled", "Completed"]]}
 				)
-				self.percent_complete = flt(flt(completed) / total * 100, 2)
+				self.percent_complete = round_percent_complete(
+					flt(completed) / total * 100, unfinished=completed < total
+				)
 
 			if self.percent_complete_method in ("Task Progress", "Task Weight") and total > 0:
-				self.percent_complete = flt(self.get_task_progress(), 2)
+				progress, unfinished = self.get_task_progress()
+				self.percent_complete = round_percent_complete(progress, unfinished)
 
 		# don't update status if it is manually set to cancelled or on hold
 		if self.status in ("Cancelled", "On hold"):
@@ -348,8 +351,10 @@ class Project(Document):
 				title=_("Cannot set Project to Completed"),
 			)
 
-	def get_task_progress(self) -> float:
-		"""Average task progress, weighted for Task Weight. Completed and cancelled tasks count as done."""
+	def get_task_progress(self) -> tuple[float, bool]:
+		"""Average task progress, weighted for Task Weight, and whether a task that counts is unfinished.
+
+		Completed and cancelled tasks count as done."""
 		tasks = frappe.get_all(
 			"Task", filters={"project": self.name}, fields=["status", "progress", "task_weight"]
 		)
@@ -360,7 +365,8 @@ class Project(Document):
 		progress = [
 			100 if task.status in ("Completed", "Cancelled") else flt(task.progress) for task in tasks
 		]
-		return sum(p * w for p, w in zip(progress, weights, strict=True)) / sum(weights)
+		unfinished = any(p < 100 for p, w in zip(progress, weights, strict=True) if w)
+		return sum(p * w for p, w in zip(progress, weights, strict=True)) / sum(weights), unfinished
 
 	def update_costing(self):
 		from frappe.query_builder.functions import Max, Min, Sum
@@ -478,6 +484,14 @@ class Project(Document):
 
 		revoke_access_for_project_users(removed_users)
 		grant_access_for_project_users(new_users)
+
+
+def round_percent_complete(percent: float, unfinished: bool) -> float:
+	"""Round % Complete to 2 decimals, keeping unfinished work below 100 so the project stays Open."""
+	if not unfinished:
+		return 100.0
+
+	return min(flt(percent, 2), 99.99)
 
 
 def get_timeline_data(doctype: str, name: str) -> dict[int, int]:
